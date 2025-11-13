@@ -688,13 +688,21 @@ class TrendlineDetector:
         """
         trendlines = []
 
-        recent_data = df.iloc[-lookback:]
-        recent_swings = swing_points.iloc[-lookback:]
+        # FIXED: Use correct data alignment - filter swings that are in lookback period
+        lookback_start_idx = len(df) - lookback
+
+        # Get swing points that fall within the lookback period
+        swing_lows_all = swing_points[swing_points.get('swing_low', False)]
+        swing_highs_all = swing_points[swing_points.get('swing_high', False)]
+
+        # Filter to only swings in recent data
+        swing_lows = swing_lows_all[swing_lows_all.index >= df.index[lookback_start_idx]]
+        swing_highs = swing_highs_all[swing_highs_all.index >= df.index[lookback_start_idx]]
 
         # Uptrend lines (connect swing lows)
-        swing_lows = recent_swings[recent_swings.get('swing_low', False)]
         if len(swing_lows) >= 2:
-            lows_idx = [recent_data.index.get_loc(idx) for idx in swing_lows.index if idx in recent_data.index]
+            # Convert timestamps to integer positions in full dataframe
+            lows_idx = [df.index.get_loc(idx) for idx in swing_lows.index]
             lows_prices = swing_lows['low'].values
 
             if len(lows_idx) >= 2:
@@ -703,8 +711,9 @@ class TrendlineDetector:
                 y = lows_prices
                 slope, intercept, r_value, _, _ = linregress(x, y)
 
-                # Only keep if uptrending and good fit
-                if slope > 0 and abs(r_value) > 0.7:
+                # FIXED: Relaxed threshold from 0.7 to 0.5 for ranging markets
+                # Accept if reasonable correlation (slope direction less important in ranging markets)
+                if abs(r_value) > 0.5:  # Focus on correlation, R² > 0.25
                     trendlines.append({
                         'type': 'support',
                         'slope': slope,
@@ -716,9 +725,9 @@ class TrendlineDetector:
                     })
 
         # Downtrend lines (connect swing highs)
-        swing_highs = recent_swings[recent_swings.get('swing_high', False)]
         if len(swing_highs) >= 2:
-            highs_idx = [recent_data.index.get_loc(idx) for idx in swing_highs.index if idx in recent_data.index]
+            # Convert timestamps to integer positions in full dataframe
+            highs_idx = [df.index.get_loc(idx) for idx in swing_highs.index]
             highs_prices = swing_highs['high'].values
 
             if len(highs_idx) >= 2:
@@ -726,8 +735,9 @@ class TrendlineDetector:
                 y = highs_prices
                 slope, intercept, r_value, _, _ = linregress(x, y)
 
-                # Only keep if downtrending and good fit
-                if slope < 0 and abs(r_value) > 0.7:
+                # FIXED: Relaxed threshold from 0.7 to 0.5 for ranging markets
+                # Accept if reasonable correlation (slope direction less important in ranging markets)
+                if abs(r_value) > 0.5:  # Focus on correlation, R² > 0.25
                     trendlines.append({
                         'type': 'resistance',
                         'slope': slope,

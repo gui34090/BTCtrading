@@ -320,9 +320,14 @@ class SmartMoneyDetector:
                         fvg['mitigated'] = True
                         break
 
+        # FIXED: Prioritize unmitigated FVGs, but show mitigated if no unmitigated exist
+        # This ensures FVGs are always shown (they mark important institutional levels)
+        unmitigated_bullish = [f for f in bullish_fvgs if not f['mitigated']]
+        unmitigated_bearish = [f for f in bearish_fvgs if not f['mitigated']]
+
         return {
-            'bullish': [f for f in bullish_fvgs if not f['mitigated']][-15:],
-            'bearish': [f for f in bearish_fvgs if not f['mitigated']][-15:]
+            'bullish': (unmitigated_bullish or bullish_fvgs)[-15:],  # Show unmitigated first, fallback to all
+            'bearish': (unmitigated_bearish or bearish_fvgs)[-15:]   # Show unmitigated first, fallback to all
         }
 
     @staticmethod
@@ -632,7 +637,8 @@ class SignalGenerator:
 
                 # Trendline Detection
                 if len(swing_df) >= 2:
-                    self.trendlines = TrendlineDetector.detect_trendlines(self.df, swing_df)
+                    # FIXED: Use longer lookback (200 bars) to find enough swing points
+                    self.trendlines = TrendlineDetector.detect_trendlines(self.df, swing_df, lookback=200)
                     print(f"  ✓ Detected {len(self.trendlines)} trendlines")
                 else:
                     self.trendlines = []
