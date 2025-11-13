@@ -150,13 +150,13 @@ class FalseBreakoutDetector:
     """Detect engineered liquidity via false breakouts"""
 
     @staticmethod
-    def detect_long_wicks(df: pd.DataFrame, wick_ratio: float = 0.6) -> pd.DataFrame:
+    def detect_long_wicks(df: pd.DataFrame, wick_ratio: float = 2.0) -> pd.DataFrame:
         """
         Identify candles with long wicks (potential false breakouts)
 
         Args:
             df: OHLCV DataFrame
-            wick_ratio: Minimum ratio of wick to body
+            wick_ratio: Minimum ratio of wick to body (2.0 = wick must be 2x body size)
 
         Returns:
             DataFrame with wick markers

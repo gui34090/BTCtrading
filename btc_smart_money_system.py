@@ -88,7 +88,7 @@ class Config:
     NY_SESSION = (13, 15)  # 13:30-15:30 UTC (adjusted for clarity)
 
     # Signal confluence requirements
-    MIN_CONFLUENCE_SCORE = 3  # Minimum factors for valid signal
+    MIN_CONFLUENCE_SCORE = 6  # Minimum factors for valid signal (50% of 12 factors)
 
     # Risk management
     RISK_PER_TRADE = 0.01  # 1% risk per trade
@@ -829,24 +829,113 @@ class SignalGenerator:
 
         return score, factors
 
+    def _validate_ict_setup(self, idx: int, direction: str) -> bool:
+        """
+        Validate proper ICT setup sequence before generating signal
+
+        ICT requires:
+        1. Liquidity sweep (optional but preferred)
+        2. Entry in discount zone (longs) or premium zone (shorts)
+        3. Order Block OR Fair Value Gap (required)
+        4. Market structure confirmation OR HTF alignment (required)
+
+        Args:
+            idx: Current bar index
+            direction: 'long' or 'short'
+
+        Returns:
+            True if proper ICT setup exists
+        """
+        row = self.df.iloc[idx]
+        price = row['close']
+
+        # Find swing high/low for Fibonacci zones
+        recent_swing_high = self.df[self.df['swing_high']]['high'].iloc[-5:].max() if self.df['swing_high'].any() else price * 1.05
+        recent_swing_low = self.df[self.df['swing_low']]['low'].iloc[-5:].min() if self.df['swing_low'].any() else price * 0.95
+
+        # REQUIRED: Must be in proper Fibonacci zone
+        if direction == 'long':
+            # Long entries should be in DISCOUNT zone (below 50%)
+            in_correct_zone = FibonacciAnalyzer.is_in_discount_zone(price, recent_swing_high, recent_swing_low)
+        else:
+            # Short entries should be in PREMIUM zone (above 50%)
+            in_correct_zone = FibonacciAnalyzer.is_in_premium_zone(price, recent_swing_high, recent_swing_low)
+
+        if not in_correct_zone:
+            return False  # Not in correct zone, no signal
+
+        # REQUIRED: Must have Order Block OR Fair Value Gap
+        has_ob = False
+        has_fvg = False
+
+        # Check Order Blocks
+        obs = self.order_blocks['bullish'] if direction == 'long' else self.order_blocks['bearish']
+        for ob in obs:
+            if ob['low'] <= price <= ob['high']:
+                has_ob = True
+                break
+
+        # Check Fair Value Gaps
+        fvgs = self.fvgs['bullish'] if direction == 'long' else self.fvgs['bearish']
+        for fvg in fvgs:
+            if fvg['low'] <= price <= fvg['high']:
+                has_fvg = True
+                break
+
+        if not (has_ob or has_fvg):
+            return False  # No OB or FVG, no signal
+
+        # REQUIRED: HTF alignment OR market structure
+        htf_bias = self._get_htf_bias()
+        htf_aligned = (direction == 'long' and htf_bias == 'bullish') or (direction == 'short' and htf_bias == 'bearish')
+
+        # Check recent BOS
+        has_bos = False
+        if 'bos' in self.df.columns:
+            recent_bos = self.df.iloc[max(0, idx-10):idx]['bos']
+            if recent_bos.notna().any():
+                last_bos = recent_bos[recent_bos.notna()].iloc[-1]
+                has_bos = (direction == 'long' and last_bos == 'bullish') or (direction == 'short' and last_bos == 'bearish')
+
+        if not (htf_aligned or has_bos):
+            return False  # No HTF alignment or BOS, no signal
+
+        # All ICT setup requirements met
+        return True
+
     def generate_signals(self) -> List[Dict]:
         """
-        Generate trading signals based on confluence criteria
+        Generate trading signals based on ICT methodology
 
         Returns:
             List of signal dictionaries
         """
-        print("\n🎯 Generating trading signals...")
+        print("\n🎯 Generating trading signals (ICT Setup Validation)...")
 
         signals = []
+        last_signal_index = -10  # Track last signal to implement cooldown
 
         for i in range(Config.SWING_LENGTH, len(self.df)):
             row = self.df.iloc[i]
 
+            # Signal cooldown - wait 5 bars between signals (avoid rapid-fire)
+            if i - last_signal_index < 5:
+                continue
+
             # Check for long signals
             long_score, long_factors = self._calculate_confluence_score(i, 'long')
 
-            if long_score >= Config.MIN_CONFLUENCE_SCORE:
+            # Check for short signals
+            short_score, short_factors = self._calculate_confluence_score(i, 'short')
+
+            # CRITICAL FIX: Prevent contradictory signals on same candle
+            # If both long and short qualify, it indicates indecision - skip this candle
+            if long_score >= Config.MIN_CONFLUENCE_SCORE and short_score >= Config.MIN_CONFLUENCE_SCORE:
+                # Indecision candle - both directions qualify, skip it
+                continue
+
+            # Only generate LONG signal if long qualified and short didn't
+            elif long_score >= Config.MIN_CONFLUENCE_SCORE and self._validate_ict_setup(i, 'long'):
                 # Find swing high/low for stop loss and take profit
                 recent_swing_high = self.df[self.df['swing_high']]['high'].iloc[-5:].max() if self.df['swing_high'].any() else row['close'] * 1.05
                 recent_swing_low = self.df[self.df['swing_low']]['low'].iloc[-5:].min() if self.df['swing_low'].any() else row['close'] * 0.95
@@ -867,12 +956,11 @@ class SignalGenerator:
                     'session': row['session']
                 }
                 signals.append(signal)
+                last_signal_index = i  # Update cooldown tracker
                 print(f"  🟢 LONG @ {row['close']:.2f} | Confidence: {long_score} | {', '.join(long_factors)}")
 
-            # Check for short signals
-            short_score, short_factors = self._calculate_confluence_score(i, 'short')
-
-            if short_score >= Config.MIN_CONFLUENCE_SCORE:
+            # Only generate SHORT signal if short qualified and short didn't
+            elif short_score >= Config.MIN_CONFLUENCE_SCORE and self._validate_ict_setup(i, 'short'):
                 recent_swing_high = self.df[self.df['swing_high']]['high'].iloc[-5:].max() if self.df['swing_high'].any() else row['close'] * 1.05
                 recent_swing_low = self.df[self.df['swing_low']]['low'].iloc[-5:].min() if self.df['swing_low'].any() else row['close'] * 0.95
 
@@ -891,10 +979,11 @@ class SignalGenerator:
                     'session': row['session']
                 }
                 signals.append(signal)
+                last_signal_index = i  # Update cooldown tracker
                 print(f"  🔴 SHORT @ {row['close']:.2f} | Confidence: {short_score} | {', '.join(short_factors)}")
 
         self.signals = signals
-        print(f"\n✓ Generated {len(signals)} total signals")
+        print(f"\n✓ Generated {len(signals)} total signals (ICT-validated)")
         return signals
 
 
