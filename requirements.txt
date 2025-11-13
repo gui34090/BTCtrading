@@ -1,0 +1,18 @@
+# Institutional-Grade BTC/USDT Smart Money Trading System
+# Required Python packages
+
+# Core data analysis
+pandas>=2.0.0
+numpy>=1.24.0
+
+# Scientific computing
+scipy>=1.10.0
+
+# Interactive visualization
+plotly>=5.18.0
+
+# Cryptocurrency exchange connectivity
+ccxt>=4.0.0
+
+# Optional: For additional technical indicators
+# ta-lib>=0.4.0  # Requires TA-Lib C library installation
