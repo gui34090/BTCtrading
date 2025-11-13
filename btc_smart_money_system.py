@@ -24,6 +24,18 @@ from typing import Dict, List, Tuple, Optional
 import warnings
 warnings.filterwarnings('ignore')
 
+# Import enhanced modules
+try:
+    from elliott_wave_analyzer import ElliottWaveAnalyzer, format_wave_summary
+    from advanced_patterns import (
+        IntegratedPatternAnalyzer, VolumeAnalyzer,
+        NestedFibonacciAnalyzer
+    )
+    ENHANCED_FEATURES_AVAILABLE = True
+except ImportError:
+    ENHANCED_FEATURES_AVAILABLE = False
+    print("⚠️  Enhanced features (Elliott Wave, Volume Analysis) not available.")
+
 
 # ============================================================================
 # CONFIGURATION
@@ -563,6 +575,39 @@ class SignalGenerator:
         print(f"  ✓ Found {len(self.fvgs['bullish'])} bullish FVGs, {len(self.fvgs['bearish'])} bearish FVGs")
         print(f"  ✓ Detected {self.df['liquidity_sweep'].notna().sum()} liquidity sweeps")
 
+        # Enhanced features (if available)
+        if ENHANCED_FEATURES_AVAILABLE:
+            print("  🔬 Activating enhanced analysis modules...")
+
+            # Elliott Wave Analysis
+            try:
+                self.elliott_analyzer = ElliottWaveAnalyzer(self.df, self.df)
+                self.elliott_patterns = self.elliott_analyzer.detect_impulse_waves(min_confidence=0.6)
+                self.corrective_patterns = self.elliott_analyzer.detect_corrective_waves(min_confidence=0.5)
+                print(f"  ✓ Detected {len(self.elliott_patterns)} Elliott Wave patterns")
+
+                if self.elliott_patterns:
+                    print(format_wave_summary(self.elliott_patterns))
+            except Exception as e:
+                print(f"  ⚠️  Elliott Wave analysis failed: {e}")
+                self.elliott_analyzer = None
+                self.elliott_patterns = []
+
+            # Advanced Pattern Analysis
+            try:
+                self.pattern_analyzer = IntegratedPatternAnalyzer(self.df)
+                self.df = self.pattern_analyzer.get_data()
+                print(f"  ✓ Volume analysis active")
+                print(f"  ✓ False breakout detection active")
+                print(f"  ✓ Stop cascade detection active")
+            except Exception as e:
+                print(f"  ⚠️  Advanced pattern analysis failed: {e}")
+                self.pattern_analyzer = None
+        else:
+            self.elliott_analyzer = None
+            self.elliott_patterns = []
+            self.pattern_analyzer = None
+
     def _get_htf_bias(self) -> Optional[str]:
         """
         Determine higher timeframe market bias
@@ -651,6 +696,37 @@ class SignalGenerator:
                (direction == 'short' and htf_bias == 'bearish'):
                 score += 1
                 factors.append('HTF Alignment')
+
+        # ===== ENHANCED FEATURES =====
+        if ENHANCED_FEATURES_AVAILABLE and self.pattern_analyzer:
+            # 7. Volume Confirmation
+            additional_score, additional_factors = self.pattern_analyzer.get_enhanced_confluence(idx, direction)
+            score += additional_score
+            factors.extend(additional_factors)
+
+            # 8. Elliott Wave Context
+            if self.elliott_analyzer and self.elliott_patterns:
+                wave_context = self.elliott_analyzer.get_current_wave_context()
+
+                if wave_context['wave']:
+                    # Wave 2 is prime entry zone
+                    if wave_context['wave'] == 'Wave 2':
+                        if (direction == 'long' and wave_context['direction'] == 'bullish') or \
+                           (direction == 'short' and wave_context['direction'] == 'bearish'):
+                            score += 2  # Strong boost for Wave 2 entries
+                            factors.append(f"Elliott Wave 2 Entry ({wave_context['smart_money_action']})")
+
+                    # Wave 3 continuation
+                    elif wave_context['wave'] == 'Wave 3':
+                        if (direction == 'long' and wave_context['direction'] == 'bullish') or \
+                           (direction == 'short' and wave_context['direction'] == 'bearish'):
+                            score += 1
+                            factors.append("Elliott Wave 3 (Money Wave)")
+
+                    # Wave 5 warning (exit zone)
+                    elif wave_context['wave'] == 'Wave 5':
+                        score -= 1  # Reduce confidence in Wave 5
+                        factors.append("Wave 5 Warning (Exit Zone)")
 
         return score, factors
 
