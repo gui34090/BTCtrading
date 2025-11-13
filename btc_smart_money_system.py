@@ -6,12 +6,14 @@ Institutional-Grade BTC/USDT Live Chart with Smart Money Signals
 This system implements a sophisticated trading strategy based on:
 - Smart Money Concepts (ICT methodology)
 - Fibonacci analysis with Golden Pocket (61.8%-78.6%)
-- Elliott Wave Theory patterns
-- Liquidity sweeps and institutional footprints
-- Multi-timeframe confluence analysis
+- Elliott Wave Theory patterns (5-3 waves with advanced patterns)
+- Volume confirmation and advanced pattern detection
+- Candlestick patterns and period level tracking
+- Fibonacci Time Zones and trendline liquidity
+- Multi-timeframe confluence analysis (12+ factors)
 
 Author: Institutional Trading System
-Version: 1.0.0
+Version: 3.0.0 - 100% Complete Implementation
 """
 
 import pandas as pd
@@ -30,6 +32,10 @@ try:
     from advanced_patterns import (
         IntegratedPatternAnalyzer, VolumeAnalyzer,
         NestedFibonacciAnalyzer
+    )
+    from final_features import (
+        FibonacciTimeZones, AdvancedWavePatterns, CandlestickPatterns,
+        PeriodLevels, TrendlineDetector
     )
     ENHANCED_FEATURES_AVAILABLE = True
 except ImportError:
@@ -603,10 +609,67 @@ class SignalGenerator:
             except Exception as e:
                 print(f"  ⚠️  Advanced pattern analysis failed: {e}")
                 self.pattern_analyzer = None
+
+            # Final Features (100% Complete)
+            try:
+                print("  🎯 Activating final 5% features...")
+
+                # Candlestick Patterns
+                self.df = CandlestickPatterns.enrich_dataframe(self.df)
+                pattern_count = self.df['candlestick_pattern'].notna().sum()
+                print(f"  ✓ Detected {pattern_count} candlestick patterns")
+
+                # Period Levels
+                self.df = PeriodLevels.calculate_period_levels(self.df)
+                print(f"  ✓ Period levels calculated (daily/weekly/monthly)")
+
+                # Fibonacci Time Zones
+                swing_df = self.df[self.df['swing_high'] | self.df['swing_low']].copy()
+                if len(swing_df) > 0:
+                    self.df = FibonacciTimeZones.identify_time_zone_events(self.df, swing_df)
+                    time_zone_count = self.df['fib_time_zone'].sum()
+                    print(f"  ✓ Identified {time_zone_count} Fibonacci time zones")
+
+                # Trendline Detection
+                if len(swing_df) >= 2:
+                    self.trendlines = TrendlineDetector.detect_trendlines(self.df, swing_df)
+                    print(f"  ✓ Detected {len(self.trendlines)} trendlines")
+                else:
+                    self.trendlines = []
+
+                # Advanced Wave Patterns (ending diagonals, triangles)
+                if self.elliott_patterns:
+                    for pattern in self.elliott_patterns:
+                        # Check for ending diagonal in Wave 5
+                        if pattern.wave_5:
+                            wave_5_data = {
+                                'start_idx': pattern.wave_5.start_idx,
+                                'end_idx': pattern.wave_5.end_idx
+                            }
+                            diagonal = AdvancedWavePatterns.detect_ending_diagonal(self.df, wave_5_data)
+                            if diagonal:
+                                print(f"  ✓ Ending diagonal detected in Wave 5 ({diagonal['direction']})")
+
+                    # Check for triangles
+                    triangles = AdvancedWavePatterns.detect_contracting_triangle(self.df, swing_df)
+                    if triangles:
+                        print(f"  ✓ Detected {len(triangles)} contracting triangle(s)")
+                        self.triangles = triangles
+                    else:
+                        self.triangles = []
+                else:
+                    self.triangles = []
+
+            except Exception as e:
+                print(f"  ⚠️  Final features initialization failed: {e}")
+                self.trendlines = []
+                self.triangles = []
         else:
             self.elliott_analyzer = None
             self.elliott_patterns = []
             self.pattern_analyzer = None
+            self.trendlines = []
+            self.triangles = []
 
     def _get_htf_bias(self) -> Optional[str]:
         """
@@ -727,6 +790,42 @@ class SignalGenerator:
                     elif wave_context['wave'] == 'Wave 5':
                         score -= 1  # Reduce confidence in Wave 5
                         factors.append("Wave 5 Warning (Exit Zone)")
+
+            # 9. Candlestick Pattern Confluence
+            if 'candlestick_pattern' in self.df.columns and pd.notna(row.get('candlestick_pattern')):
+                pattern_strength = row.get('pattern_strength', 0)
+                if pattern_strength > 0:
+                    # Map pattern type to direction
+                    pattern_name = row['candlestick_pattern']
+                    is_bullish_pattern = any(word in pattern_name.lower() for word in ['bullish', 'hammer', 'morning', 'dragonfly'])
+                    is_bearish_pattern = any(word in pattern_name.lower() for word in ['bearish', 'shooting', 'evening', 'gravestone'])
+
+                    if (direction == 'long' and is_bullish_pattern) or (direction == 'short' and is_bearish_pattern):
+                        # Add strength-based score (1-3 points)
+                        pattern_score = min(3, pattern_strength)
+                        score += pattern_score
+                        factors.append(f"Candlestick: {pattern_name}")
+
+            # 10. Period Level Confluence
+            if hasattr(self, 'df') and any(col in self.df.columns for col in ['prev_day_high', 'prev_week_high']):
+                level_score, level_factors = PeriodLevels.check_level_interaction(price, row)
+                if level_score > 0:
+                    score += level_score
+                    factors.extend(level_factors)
+
+            # 11. Fibonacci Time Zone Confluence
+            if 'fib_time_zone' in self.df.columns:
+                tz_score, tz_description = FibonacciTimeZones.get_confluence_score(row.name, self.df)
+                if tz_score > 0:
+                    score += tz_score
+                    factors.append(tz_description)
+
+            # 12. Trendline Proximity
+            if hasattr(self, 'trendlines') and self.trendlines:
+                tl_score, tl_factors = TrendlineDetector.check_trendline_proximity(idx, price, self.trendlines)
+                if tl_score > 0:
+                    score += tl_score
+                    factors.extend(tl_factors)
 
         return score, factors
 
