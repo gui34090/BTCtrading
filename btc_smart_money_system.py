@@ -13,7 +13,7 @@ This system implements a sophisticated trading strategy based on:
 - Multi-timeframe confluence analysis (12+ factors)
 
 Author: Institutional Trading System
-Version: 3.0.0 - 100% Complete Implementation
+Version: 3.1.0 - Production-Ready with Critical Bug Fixes
 """
 
 import pandas as pd
@@ -400,6 +400,86 @@ class SmartMoneyDetector:
 
 
 # ============================================================================
+# DATA VALIDATION
+# ============================================================================
+
+class OHLCVValidator:
+    """Comprehensive OHLCV data validation"""
+
+    @staticmethod
+    def validate(df: pd.DataFrame, name: str = "DataFrame") -> None:
+        """
+        Validate OHLCV dataframe for data integrity
+
+        Args:
+            df: DataFrame to validate
+            name: Name for error messages
+
+        Raises:
+            ValueError: If data is invalid
+        """
+        # Check empty dataframe
+        if len(df) == 0:
+            raise ValueError(f"{name}: DataFrame is empty")
+
+        # Check required columns
+        required = ['open', 'high', 'low', 'close', 'volume']
+        missing = [c for c in required if c not in df.columns]
+        if missing:
+            raise ValueError(f"{name}: Missing required columns: {missing}")
+
+        # Check timestamps
+        if not isinstance(df.index, pd.DatetimeIndex):
+            raise ValueError(f"{name}: Index must be DatetimeIndex, got {type(df.index)}")
+
+        # Check for duplicate timestamps
+        if df.index.duplicated().any():
+            duplicates = df.index[df.index.duplicated()].unique()
+            raise ValueError(f"{name}: Duplicate timestamps found at: {duplicates[:5]}")
+
+        # Check timestamps are sorted
+        if not df.index.is_monotonic_increasing:
+            raise ValueError(f"{name}: Timestamps must be sorted in ascending order")
+
+        # Check OHLC relationships
+        invalid_hl = (df['high'] < df['low']).sum()
+        if invalid_hl > 0:
+            raise ValueError(f"{name}: Found {invalid_hl} candles where high < low (impossible)")
+
+        invalid_close_high = (df['close'] > df['high']).sum()
+        if invalid_close_high > 0:
+            raise ValueError(f"{name}: Found {invalid_close_high} candles where close > high (impossible)")
+
+        invalid_close_low = (df['close'] < df['low']).sum()
+        if invalid_close_low > 0:
+            raise ValueError(f"{name}: Found {invalid_close_low} candles where close < low (impossible)")
+
+        invalid_open_high = (df['open'] > df['high']).sum()
+        if invalid_open_high > 0:
+            raise ValueError(f"{name}: Found {invalid_open_high} candles where open > high (impossible)")
+
+        invalid_open_low = (df['open'] < df['low']).sum()
+        if invalid_open_low > 0:
+            raise ValueError(f"{name}: Found {invalid_open_low} candles where open < low (impossible)")
+
+        # Check for positive prices (crypto can't be negative)
+        negative_prices = (df[['open', 'high', 'low', 'close']] <= 0).sum().sum()
+        if negative_prices > 0:
+            raise ValueError(f"{name}: Found {negative_prices} negative or zero prices (invalid for crypto)")
+
+        # Warn about zero/negative volume (not critical, but suspicious)
+        zero_volume = (df['volume'] <= 0).sum()
+        if zero_volume > 0:
+            import warnings
+            warnings.warn(f"{name}: Found {zero_volume} candles with zero/negative volume")
+
+        # Check for NaN values
+        nan_count = df[required].isna().sum().sum()
+        if nan_count > 0:
+            raise ValueError(f"{name}: Found {nan_count} NaN values in OHLCV data")
+
+
+# ============================================================================
 # FIBONACCI ANALYZER
 # ============================================================================
 
@@ -418,7 +498,25 @@ class FibonacciAnalyzer:
 
         Returns:
             Dictionary of retracement levels
+
+        Raises:
+            ValueError: If high <= low or prices are invalid
         """
+        # Validate inputs
+        if high <= low:
+            raise ValueError(f"Invalid Fibonacci range: high ({high:.2f}) must be > low ({low:.2f})")
+
+        if high <= 0 or low <= 0:
+            raise ValueError(f"Prices must be positive: high={high:.2f}, low={low:.2f}")
+
+        # Check minimum range (0.05% to avoid divide-by-zero issues)
+        min_range_pct = 0.0005
+        if (high - low) / high < min_range_pct:
+            raise ValueError(
+                f"Fibonacci range too small: {high:.2f} - {low:.2f} = {high-low:.2f} "
+                f"({(high-low)/high*100:.4f}% < {min_range_pct*100:.2f}%)"
+            )
+
         diff = high - low
         levels = {}
 
@@ -445,7 +543,17 @@ class FibonacciAnalyzer:
 
         Returns:
             Dictionary of extension levels
+
+        Raises:
+            ValueError: If high <= low or prices are invalid
         """
+        # Validate inputs (same as retracements)
+        if high <= low:
+            raise ValueError(f"Invalid Fibonacci range: high ({high:.2f}) must be > low ({low:.2f})")
+
+        if high <= 0 or low <= 0:
+            raise ValueError(f"Prices must be positive: high={high:.2f}, low={low:.2f}")
+
         diff = high - low
         levels = {}
 
@@ -564,7 +672,16 @@ class SignalGenerator:
         Args:
             df: Primary timeframe OHLCV data
             htf_df: Higher timeframe data for bias (optional)
+
+        Raises:
+            ValueError: If data validation fails
         """
+        # CRITICAL: Validate data BEFORE processing
+        OHLCVValidator.validate(df, "Primary DataFrame")
+
+        if htf_df is not None:
+            OHLCVValidator.validate(htf_df, "HTF DataFrame")
+
         self.df = df.copy()
         self.htf_df = htf_df
         self.signals = []

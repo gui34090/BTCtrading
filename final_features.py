@@ -688,6 +688,11 @@ class TrendlineDetector:
         """
         trendlines = []
 
+        # FIXED: Cap lookback at available data to prevent negative index
+        lookback = min(lookback, len(df) - 1)
+        if lookback < 10:  # Need minimum data for meaningful trendlines
+            return trendlines
+
         # FIXED: Use correct data alignment - filter swings that are in lookback period
         lookback_start_idx = len(df) - lookback
 
