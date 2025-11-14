@@ -13,7 +13,7 @@ This system implements a sophisticated trading strategy based on:
 - Multi-timeframe confluence analysis (12+ factors)
 
 Author: Institutional Trading System
-Version: 3.4.0 - Deep Search Fixes (Negative Volume Validation)
+Version: 3.8.0 - Threshold Validation (Bugs #26-27 Fixed)
 """
 
 import pandas as pd
@@ -129,14 +129,18 @@ class Config:
             )
 
         # Detection thresholds
-        if Config.OB_THRESHOLD < 0:
+        # FIXED BUG #27: OB_THRESHOLD must be > 0 (not just >= 0)
+        if Config.OB_THRESHOLD <= 0:
             raise ValueError(
-                f"OB_THRESHOLD must be >= 0, got {Config.OB_THRESHOLD}"
+                f"OB_THRESHOLD must be > 0, got {Config.OB_THRESHOLD}. "
+                f"Zero threshold would detect ALL opposite candles as order blocks (too sensitive)."
             )
 
-        if Config.FVG_THRESHOLD < 0:
+        # FIXED BUG #26: FVG_THRESHOLD must be > 0 (not just >= 0)
+        if Config.FVG_THRESHOLD <= 0:
             raise ValueError(
-                f"FVG_THRESHOLD must be >= 0, got {Config.FVG_THRESHOLD}"
+                f"FVG_THRESHOLD must be > 0, got {Config.FVG_THRESHOLD}. "
+                f"Zero threshold would detect ALL gaps as fair value gaps (too sensitive)."
             )
 
         # Confluence requirements
@@ -1347,6 +1351,40 @@ class RiskManager:
         Raises:
             ValueError: If entry_price equals stop_loss or stop is too tight
         """
+        # FIXED BUG #20: Validate risk_per_trade parameter
+        if risk_per_trade <= 0:
+            raise ValueError(
+                f"Invalid risk_per_trade: {risk_per_trade}. "
+                f"Risk per trade must be > 0 (e.g., 0.01 for 1%)."
+            )
+
+        if risk_per_trade > 0.05:  # 5% max (same as Config validation)
+            raise ValueError(
+                f"Risk per trade too high: {risk_per_trade*100:.1f}%. "
+                f"Maximum allowed is 5% to prevent excessive losses."
+            )
+
+        # FIXED BUG #21 & #22: Validate account_balance parameter
+        if account_balance <= 0:
+            raise ValueError(
+                f"Invalid account_balance: ${account_balance:,.2f}. "
+                f"Account balance must be > 0 to calculate position size."
+            )
+
+        # FIXED BUG #23 & #24: Validate entry_price parameter
+        if entry_price <= 0:
+            raise ValueError(
+                f"Invalid entry_price: ${entry_price:,.2f}. "
+                f"Entry price must be > 0 (prices cannot be zero or negative)."
+            )
+
+        # FIXED BUG #25: Validate stop_loss parameter
+        if stop_loss <= 0:
+            raise ValueError(
+                f"Invalid stop_loss: ${stop_loss:,.2f}. "
+                f"Stop loss must be > 0 (prices cannot be zero or negative)."
+            )
+
         risk_amount = account_balance * risk_per_trade
         price_diff = abs(entry_price - stop_loss)
 
@@ -1788,7 +1826,17 @@ class Backtester:
             df: OHLCV DataFrame
             signals: List of trading signals
             initial_balance: Starting account balance
+
+        Raises:
+            ValueError: If initial_balance is invalid
         """
+        # FIXED BUG #21 & #22: Validate initial_balance
+        if initial_balance <= 0:
+            raise ValueError(
+                f"Invalid initial_balance: ${initial_balance:,.2f}. "
+                f"Initial balance must be > 0 to run backtest."
+            )
+
         self.df = df
         self.signals = signals
         self.initial_balance = initial_balance
