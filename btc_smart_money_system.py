@@ -13,7 +13,7 @@ This system implements a sophisticated trading strategy based on:
 - Multi-timeframe confluence analysis (12+ factors)
 
 Author: Institutional Trading System
-Version: 3.2.0 - Algorithm Fixes Applied (BOS/CHoCH, Swing Points, OB Mitigation)
+Version: 3.3.0 - Integration & Safety Fixes (Dashboard, Config Validation)
 """
 
 import pandas as pd
@@ -97,6 +97,82 @@ class Config:
     # Visualization
     CHART_THEME = "plotly_dark"
     CHART_HEIGHT = 1200
+
+    @staticmethod
+    def validate_config():
+        """
+        FIXED BUG #17: Validate all Config parameters to prevent dangerous values
+
+        Raises:
+            ValueError: If any parameter is invalid or dangerous
+        """
+        # Swing detection parameters
+        if not isinstance(Config.SWING_LENGTH, int) or Config.SWING_LENGTH <= 0:
+            raise ValueError(
+                f"SWING_LENGTH must be integer > 0, got {Config.SWING_LENGTH}"
+            )
+
+        if Config.SWING_LENGTH < 3:
+            raise ValueError(
+                f"SWING_LENGTH should be >= 3 for reliable swing detection, got {Config.SWING_LENGTH}"
+            )
+
+        # Data lookback
+        if not isinstance(Config.LOOKBACK_BARS, int) or Config.LOOKBACK_BARS <= 0:
+            raise ValueError(
+                f"LOOKBACK_BARS must be integer > 0, got {Config.LOOKBACK_BARS}"
+            )
+
+        if Config.LOOKBACK_BARS < 100:
+            raise ValueError(
+                f"LOOKBACK_BARS should be >= 100 for reliable analysis, got {Config.LOOKBACK_BARS}"
+            )
+
+        # Detection thresholds
+        if Config.OB_THRESHOLD < 0:
+            raise ValueError(
+                f"OB_THRESHOLD must be >= 0, got {Config.OB_THRESHOLD}"
+            )
+
+        if Config.FVG_THRESHOLD < 0:
+            raise ValueError(
+                f"FVG_THRESHOLD must be >= 0, got {Config.FVG_THRESHOLD}"
+            )
+
+        # Confluence requirements
+        if not isinstance(Config.MIN_CONFLUENCE_SCORE, int) or Config.MIN_CONFLUENCE_SCORE <= 0:
+            raise ValueError(
+                f"MIN_CONFLUENCE_SCORE must be integer > 0, got {Config.MIN_CONFLUENCE_SCORE}"
+            )
+
+        if Config.MIN_CONFLUENCE_SCORE > 12:
+            raise ValueError(
+                f"MIN_CONFLUENCE_SCORE cannot exceed 12 (max factors), got {Config.MIN_CONFLUENCE_SCORE}"
+            )
+
+        # Risk management (CRITICAL - prevents financial loss!)
+        if Config.RISK_PER_TRADE <= 0:
+            raise ValueError(
+                f"RISK_PER_TRADE must be > 0, got {Config.RISK_PER_TRADE}"
+            )
+
+        if Config.RISK_PER_TRADE > 0.05:  # 5% max
+            raise ValueError(
+                f"RISK_PER_TRADE too high! Must be <= 0.05 (5%), got {Config.RISK_PER_TRADE}\n"
+                f"This would risk {Config.RISK_PER_TRADE*100:.1f}% of your account per trade!"
+            )
+
+        # Leverage (CRITICAL - prevents liquidation)
+        if Config.LEVERAGE <= 0:
+            raise ValueError(
+                f"LEVERAGE must be > 0, got {Config.LEVERAGE}"
+            )
+
+        if Config.LEVERAGE > 200:
+            raise ValueError(
+                f"LEVERAGE too high! Max 200x recommended, got {Config.LEVERAGE}x\n"
+                f"Extreme leverage increases liquidation risk exponentially!"
+            )
 
 
 # ============================================================================
@@ -786,8 +862,11 @@ class SignalGenerator:
             htf_df: Higher timeframe data for bias (optional)
 
         Raises:
-            ValueError: If data validation fails
+            ValueError: If data validation or config validation fails
         """
+        # CRITICAL: Validate config parameters FIRST (prevents dangerous settings)
+        Config.validate_config()
+
         # CRITICAL: Validate data BEFORE processing
         OHLCVValidator.validate(df, "Primary DataFrame")
 
@@ -1259,13 +1338,49 @@ class RiskManager:
 
         Returns:
             Dictionary with position size details
+
+        Raises:
+            ValueError: If entry_price equals stop_loss or stop is too tight
         """
         risk_amount = account_balance * risk_per_trade
         price_diff = abs(entry_price - stop_loss)
+
+        # FIXED BUG #18: Prevent division by zero
+        if price_diff == 0:
+            raise ValueError(
+                f"Invalid stop loss: entry_price ({entry_price}) equals stop_loss ({stop_loss}). "
+                f"Cannot calculate position size with zero price difference."
+            )
+
+        # ADDITIONAL SAFETY: Prevent extremely tight stops (< 0.1% of entry price)
+        # which would result in unreasonably large position sizes
+        min_stop_distance_pct = 0.001  # 0.1% minimum
+        min_stop_distance = entry_price * min_stop_distance_pct
+        if price_diff < min_stop_distance:
+            raise ValueError(
+                f"Stop loss too tight: {price_diff:.2f} ({price_diff/entry_price*100:.4f}%). "
+                f"Minimum stop distance is {min_stop_distance:.2f} ({min_stop_distance_pct*100:.1f}%) "
+                f"to prevent excessive position sizes."
+            )
+
         position_size = risk_amount / price_diff
 
         # With leverage
         leveraged_size = position_size * Config.LEVERAGE
+
+        # SAFETY: Validate position size is reasonable
+        # Check margin required, not total position value (since we're using leverage)
+        # Margin required = position_value / leverage
+        position_value = position_size * entry_price  # Without leverage
+        margin_required = position_value
+
+        # Margin should not exceed account balance (sanity check)
+        # This would mean risking > 100% of account on margin alone
+        if margin_required > account_balance:
+            raise ValueError(
+                f"Margin required (${margin_required:,.2f}) exceeds account balance (${account_balance:,.2f}). "
+                f"Consider widening your stop loss or reducing risk percentage."
+            )
 
         return {
             'position_size': position_size,

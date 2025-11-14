@@ -243,26 +243,39 @@ def create_live_chart(df, signals, order_blocks, fvgs):
         if len(swing_highs) > 0 and len(swing_lows) > 0:
             recent_high = swing_highs.iloc[-5:].max()
             recent_low = swing_lows.iloc[-5:].min()
-            fib_levels = FibonacciAnalyzer.calculate_retracements(recent_high, recent_low, 'bullish')
 
-            # Golden Pocket
-            fig.add_shape(
-                type="rect", x0=df.index[0], x1=df.index[-1],
-                y0=fib_levels['78.6%'], y1=fib_levels['61.8%'],
-                fillcolor="rgba(255, 215, 0, 0.08)",
-                line=dict(width=0), layer='below', row=1, col=1
-            )
+            # FIXED BUG #15: In strong trends, recent_low can be > recent_high
+            # (e.g., recent swing lows higher than old swing highs in uptrend)
+            fib_levels = None
+            if recent_high > recent_low:
+                fib_levels = FibonacciAnalyzer.calculate_retracements(recent_high, recent_low, 'bullish')
+            else:
+                # Use broader range when swing points are inverted
+                recent_high = df['high'].iloc[-100:].max()
+                recent_low = df['low'].iloc[-100:].min()
+                if recent_high > recent_low:
+                    fib_levels = FibonacciAnalyzer.calculate_retracements(recent_high, recent_low, 'bullish')
 
-            # Key levels
-            for level_name, color in [
-                ('61.8%', '#ffd700'), ('78.6%', '#ffd700'), ('50%', '#ff00ff')
-            ]:
-                fig.add_hline(
-                    y=fib_levels[level_name], line_dash="dash",
-                    line_color=color, line_width=1, opacity=0.4,
-                    annotation_text=f"Fib {level_name}",
-                    annotation_position="right", row=1, col=1
+            # Only draw if we have valid Fibonacci levels
+            if fib_levels is not None:
+                # Golden Pocket
+                fig.add_shape(
+                    type="rect", x0=df.index[0], x1=df.index[-1],
+                    y0=fib_levels['78.6%'], y1=fib_levels['61.8%'],
+                    fillcolor="rgba(255, 215, 0, 0.08)",
+                    line=dict(width=0), layer='below', row=1, col=1
                 )
+
+                # Key levels
+                for level_name, color in [
+                    ('61.8%', '#ffd700'), ('78.6%', '#ffd700'), ('50%', '#ff00ff')
+                ]:
+                    fig.add_hline(
+                        y=fib_levels[level_name], line_dash="dash",
+                        line_color=color, line_width=1, opacity=0.4,
+                        annotation_text=f"Fib {level_name}",
+                        annotation_position="right", row=1, col=1
+                    )
 
     # Trading Signals
     if signals:
@@ -414,6 +427,11 @@ def main():
 
         signal_data = []
         for sig in recent_signals:
+            # FIXED BUG #16: Only show '...' if there are actually more than 2 factors
+            factors_display = ', '.join(sig['factors'][:2])
+            if len(sig['factors']) > 2:
+                factors_display += '...'
+
             signal_data.append({
                 'Time': sig['timestamp'].strftime('%Y-%m-%d %H:%M'),
                 'Type': sig['type'],
@@ -423,7 +441,7 @@ def main():
                 'Confidence': f"{sig['confidence']}/6 {'⭐' * sig['confidence']}",
                 'R:R': f"1:{sig['risk_reward']:.2f}",
                 'Session': sig.get('session', 'N/A'),
-                'Factors': ', '.join(sig['factors'][:2]) + '...'
+                'Factors': factors_display
             })
 
         signal_df = pd.DataFrame(signal_data)
