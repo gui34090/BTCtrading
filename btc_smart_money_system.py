@@ -483,15 +483,27 @@ class FibonacciAnalyzer:
 
     @staticmethod
     def is_in_discount_zone(price: float, high: float, low: float) -> bool:
-        """Check if price is in discount zone (0%-50% retracement)"""
+        """
+        Check if price is in discount zone (0%-50% of range from low)
+
+        Discount = Price is closer to the LOW (good for LONGS)
+        Range: low to 50% level
+        """
         levels = FibonacciAnalyzer.calculate_retracements(high, low, 'bullish')
-        return levels['0%'] <= price <= levels['50%']
+        # FIXED: Discount zone is from LOW to 50% level
+        return low <= price <= levels['50%']
 
     @staticmethod
     def is_in_premium_zone(price: float, high: float, low: float) -> bool:
-        """Check if price is in premium zone (50%-100% retracement)"""
+        """
+        Check if price is in premium zone (50%-100% of range from low)
+
+        Premium = Price is closer to the HIGH (good for SHORTS)
+        Range: 50% level to high
+        """
         levels = FibonacciAnalyzer.calculate_retracements(high, low, 'bullish')
-        return levels['50%'] <= price <= levels['100%']
+        # FIXED: Premium zone is from 50% level to HIGH
+        return levels['50%'] <= price <= high
 
 
 # ============================================================================
