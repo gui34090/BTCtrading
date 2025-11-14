@@ -13,7 +13,7 @@ This system implements a sophisticated trading strategy based on:
 - Multi-timeframe confluence analysis (12+ factors)
 
 Author: Institutional Trading System
-Version: 3.1.0 - Production-Ready with Critical Bug Fixes
+Version: 3.2.0 - Algorithm Fixes Applied (BOS/CHoCH, Swing Points, OB Mitigation)
 """
 
 import pandas as pd
@@ -202,12 +202,20 @@ class SmartMoneyDetector:
         for i in range(length, len(df) - length):
             # Swing High: highest high in window
             window_highs = df['high'].iloc[i-length:i+length+1]
-            if df['high'].iloc[i] == window_highs.max():
+            max_high = window_highs.max()
+
+            # FIXED: Use idxmax to get first occurrence, avoiding multiple swings at same level
+            # Only mark as swing if this is the FIRST occurrence of the maximum
+            if df.index[i] == window_highs.idxmax():
                 df.loc[df.index[i], 'swing_high'] = True
 
             # Swing Low: lowest low in window
             window_lows = df['low'].iloc[i-length:i+length+1]
-            if df['low'].iloc[i] == window_lows.min():
+            min_low = window_lows.min()
+
+            # FIXED: Use idxmin to get first occurrence, avoiding multiple swings at same level
+            # Only mark as swing if this is the FIRST occurrence of the minimum
+            if df.index[i] == window_lows.idxmin():
                 df.loc[df.index[i], 'swing_low'] = True
 
         return df
@@ -217,12 +225,14 @@ class SmartMoneyDetector:
         """
         Identify Order Blocks (last opposite candle before impulse move)
 
+        FIXED: Now tracks mitigation status (like FVGs)
+
         Args:
             df: OHLCV DataFrame
             threshold: Minimum % move to qualify as impulse
 
         Returns:
-            Dictionary of bullish and bearish order blocks
+            Dictionary of bullish and bearish order blocks with mitigation status
         """
         bullish_obs = []
         bearish_obs = []
@@ -239,7 +249,9 @@ class SmartMoneyDetector:
                         'timestamp': current.name,
                         'high': current['high'],
                         'low': current['low'],
-                        'type': 'bullish'
+                        'type': 'bullish',
+                        'index': i,
+                        'mitigated': False  # FIXED: Added mitigation tracking
                     })
 
             # Bearish OB: Last green candle before strong red move
@@ -250,12 +262,38 @@ class SmartMoneyDetector:
                         'timestamp': current.name,
                         'high': current['high'],
                         'low': current['low'],
-                        'type': 'bearish'
+                        'type': 'bearish',
+                        'index': i,
+                        'mitigated': False  # FIXED: Added mitigation tracking
                     })
 
+        # FIXED: Check for mitigation (like FVGs)
+        # OB is mitigated when price returns to it and breaks through
+        for ob in bullish_obs + bearish_obs:
+            ob_idx = ob['index']
+
+            # Check all candles after OB formation
+            for i in range(ob_idx + 1, len(df)):
+                row = df.iloc[i]
+
+                if ob['type'] == 'bullish':
+                    # Bullish OB mitigated if price drops back below OB low
+                    if row['low'] < ob['low']:
+                        ob['mitigated'] = True
+                        break
+                else:  # bearish
+                    # Bearish OB mitigated if price rallies back above OB high
+                    if row['high'] > ob['high']:
+                        ob['mitigated'] = True
+                        break
+
+        # FIXED: Prioritize unmitigated OBs (same logic as FVGs)
+        unmitigated_bullish = [ob for ob in bullish_obs if not ob['mitigated']]
+        unmitigated_bearish = [ob for ob in bearish_obs if not ob['mitigated']]
+
         return {
-            'bullish': bullish_obs[-20:],  # Keep last 20
-            'bearish': bearish_obs[-20:]
+            'bullish': (unmitigated_bullish or bullish_obs)[-20:],  # Show unmitigated first, fallback to all
+            'bearish': (unmitigated_bearish or bearish_obs)[-20:]   # Show unmitigated first, fallback to all
         }
 
     @staticmethod
@@ -333,33 +371,107 @@ class SmartMoneyDetector:
     @staticmethod
     def detect_market_structure(df: pd.DataFrame) -> pd.DataFrame:
         """
-        Identify Break of Structure (BOS) and Change of Character (ChoCh)
+        Identify Break of Structure (BOS) and Change of Character (CHoCH)
 
-        BOS: Price breaks previous swing high (bullish) or low (bearish)
-        ChoCh: Potential reversal - failure to make new high/low
+        FIXED: Properly implements ICT market structure concepts
+
+        BOS (Break of Structure): Price breaks recent swing in direction of trend
+          - Bullish BOS: Higher high in uptrend (continuation)
+          - Bearish BOS: Lower low in downtrend (continuation)
+
+        CHoCH (Change of Character): Price breaks against trend (reversal)
+          - Bullish CHoCH: Higher low after downtrend (reversal to up)
+          - Bearish CHoCH: Lower high after uptrend (reversal to down)
 
         Args:
             df: OHLCV DataFrame with swing points
 
         Returns:
-            DataFrame with BOS and ChoCh markers
+            DataFrame with BOS and CHoCH markers
         """
         df = df.copy()
         df['bos'] = None
         df['choch'] = None
 
-        swing_highs = df[df['swing_high']]['high'].values
-        swing_lows = df[df['swing_low']]['low'].values
+        # Get swing point indices
+        swing_high_indices = df[df['swing_high']].index.tolist()
+        swing_low_indices = df[df['swing_low']].index.tolist()
 
-        if len(swing_highs) < 2 or len(swing_lows) < 2:
+        if len(swing_high_indices) < 2 or len(swing_low_indices) < 2:
             return df
 
-        # Detect BOS (bullish: break above previous high)
-        for i in range(1, len(df)):
-            if df['close'].iloc[i] > df['high'].iloc[:i].max() * 0.999:
-                df.loc[df.index[i], 'bos'] = 'bullish'
-            elif df['close'].iloc[i] < df['low'].iloc[:i].min() * 1.001:
-                df.loc[df.index[i], 'bos'] = 'bearish'
+        # Combine and sort all swing points chronologically
+        all_swings = []
+        for idx in swing_high_indices:
+            all_swings.append({
+                'time': idx,
+                'type': 'high',
+                'price': df.loc[idx, 'high']
+            })
+        for idx in swing_low_indices:
+            all_swings.append({
+                'time': idx,
+                'type': 'low',
+                'price': df.loc[idx, 'low']
+            })
+
+        all_swings.sort(key=lambda x: x['time'])
+
+        # Track market structure state
+        structure = 'neutral'  # 'uptrend', 'downtrend', or 'neutral'
+        last_swing_high = None
+        last_swing_low = None
+
+        for i, swing in enumerate(all_swings):
+            if swing['type'] == 'high':
+                current_high = swing['price']
+
+                if last_swing_high is not None:
+                    if current_high > last_swing_high:
+                        # Higher high
+                        if structure == 'uptrend':
+                            # BOS: Continuation of uptrend
+                            df.loc[swing['time'], 'bos'] = 'bullish'
+                        else:
+                            # CHoCH: Reversal to uptrend
+                            df.loc[swing['time'], 'choch'] = 'bullish'
+                            structure = 'uptrend'
+                    else:
+                        # Lower high
+                        if structure == 'uptrend':
+                            # CHoCH: Potential reversal from uptrend
+                            df.loc[swing['time'], 'choch'] = 'bearish'
+                            structure = 'downtrend'
+                        elif structure == 'downtrend':
+                            # BOS: Continuation of downtrend (lower high)
+                            df.loc[swing['time'], 'bos'] = 'bearish'
+
+                last_swing_high = current_high
+
+            else:  # swing_low
+                current_low = swing['price']
+
+                if last_swing_low is not None:
+                    if current_low < last_swing_low:
+                        # Lower low
+                        if structure == 'downtrend':
+                            # BOS: Continuation of downtrend
+                            df.loc[swing['time'], 'bos'] = 'bearish'
+                        else:
+                            # CHoCH: Reversal to downtrend
+                            df.loc[swing['time'], 'choch'] = 'bearish'
+                            structure = 'downtrend'
+                    else:
+                        # Higher low
+                        if structure == 'downtrend':
+                            # CHoCH: Potential reversal from downtrend
+                            df.loc[swing['time'], 'choch'] = 'bullish'
+                            structure = 'uptrend'
+                        elif structure == 'uptrend':
+                            # BOS: Continuation of uptrend (higher low)
+                            df.loc[swing['time'], 'bos'] = 'bullish'
+
+                last_swing_low = current_low
 
         return df
 
