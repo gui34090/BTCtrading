@@ -13,7 +13,7 @@ This system implements a sophisticated trading strategy based on:
 - Multi-timeframe confluence analysis (12+ factors)
 
 Author: Institutional Trading System
-Version: 3.3.0 - Integration & Safety Fixes (Dashboard, Config Validation)
+Version: 3.4.0 - Deep Search Fixes (Negative Volume Validation)
 """
 
 import pandas as pd
@@ -655,11 +655,16 @@ class OHLCVValidator:
         if negative_prices > 0:
             raise ValueError(f"{name}: Found {negative_prices} negative or zero prices (invalid for crypto)")
 
-        # Warn about zero/negative volume (not critical, but suspicious)
-        zero_volume = (df['volume'] <= 0).sum()
+        # FIXED BUG #19: Check for negative volume (should reject, not just warn)
+        negative_volume = (df['volume'] < 0).sum()
+        if negative_volume > 0:
+            raise ValueError(f"{name}: Found {negative_volume} candles with negative volume (invalid)")
+
+        # Warn about zero volume (unusual but technically possible)
+        zero_volume = (df['volume'] == 0).sum()
         if zero_volume > 0:
             import warnings
-            warnings.warn(f"{name}: Found {zero_volume} candles with zero/negative volume")
+            warnings.warn(f"{name}: Found {zero_volume} candles with zero volume (unusual)")
 
         # Check for NaN values
         nan_count = df[required].isna().sum().sum()
