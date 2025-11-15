@@ -13,7 +13,7 @@ This system implements a sophisticated trading strategy based on:
 - Multi-timeframe confluence analysis (12+ factors)
 
 Author: Institutional Trading System
-Version: 4.1.0 - Actually Working Trades (Bug #31 Fixed - 1:1 R:R + More Signals)
+Version: 4.2.0 - Full Strategy Backtest (Uses Real RiskManager + Position Sizing)
 """
 
 import pandas as pd
@@ -1996,26 +1996,49 @@ class Backtester:
                         hit_sl = True
                         break
 
-            # Calculate P&L
-            risk_amount = balance * Config.RISK_PER_TRADE
+            # Calculate P&L using ACTUAL RiskManager strategy
+            # FIXED: Use real position sizing instead of simplified calculation
+            try:
+                position_info = RiskManager.calculate_position_size(
+                    account_balance=balance,
+                    entry_price=signal['entry_price'],
+                    stop_loss=signal['stop_loss'],
+                    risk_per_trade=Config.RISK_PER_TRADE
+                )
 
-            if hit_tp:
-                rr_ratio = signal.get('risk_reward', 2)
-                profit = risk_amount * rr_ratio
-                balance += profit
-                total_profit += profit
-                wins += 1
-                outcome = 'WIN'
-            elif hit_sl:
-                loss = risk_amount
-                balance -= loss
-                total_loss += loss
-                losses += 1
-                outcome = 'LOSS'
-            else:
-                # FIXED BUG #28: Count open trades
-                open_trades += 1
-                outcome = 'OPEN'
+                position_size = position_info['position_size']  # BTC amount
+                risk_amount = position_info['risk_amount']  # Dollar risk
+
+                if hit_tp:
+                    # Calculate actual profit based on price movement
+                    if signal['type'] == 'LONG':
+                        price_gain = signal['take_profit'] - signal['entry_price']
+                    else:  # SHORT
+                        price_gain = signal['entry_price'] - signal['take_profit']
+
+                    profit = position_size * price_gain
+                    balance += profit
+                    total_profit += profit
+                    wins += 1
+                    outcome = 'WIN'
+
+                elif hit_sl:
+                    # Use actual risk amount (already calculated by RiskManager)
+                    loss = risk_amount
+                    balance -= loss
+                    total_loss += loss
+                    losses += 1
+                    outcome = 'LOSS'
+
+                else:
+                    # FIXED BUG #28: Count open trades
+                    open_trades += 1
+                    outcome = 'OPEN'
+
+            except ValueError as e:
+                # Skip this trade if position sizing fails
+                print(f"  ⚠️ Skipping signal due to position sizing error: {e}")
+                continue
 
             # Track drawdown
             if balance > peak_balance:
