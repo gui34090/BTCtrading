@@ -15,7 +15,8 @@ import time
 # Import our trading system
 from btc_smart_money_system import (
     Config, DataFetcher, SignalGenerator,
-    RiskManager, SmartMoneyDetector, FibonacciAnalyzer
+    RiskManager, SmartMoneyDetector, FibonacciAnalyzer,
+    Backtester
 )
 
 # Page configuration
@@ -478,6 +479,274 @@ def main():
         if 'liquidity_sweep' in df.columns:
             sweeps = df['liquidity_sweep'].notna().sum()
             st.write(f"💧 **Liquidity Sweeps:** {sweeps}")
+
+    # Multi-Timeframe Backtest Section
+    with st.expander("🔬 Multi-Timeframe Backtest", expanded=False):
+        st.markdown("### Backtest Performance Across Different Timeframes")
+        st.markdown("Compare how the strategy performs on different timeframes using the same data period.")
+
+        # Timeframe selection for backtest
+        st.markdown("#### Select Timeframes to Test")
+        col1, col2, col3, col4 = st.columns(4)
+
+        with col1:
+            test_5m = st.checkbox("5 Minutes", value=True)
+        with col2:
+            test_15m = st.checkbox("15 Minutes", value=True)
+        with col3:
+            test_1h = st.checkbox("1 Hour", value=True)
+        with col4:
+            test_4h = st.checkbox("4 Hours", value=False)
+
+        backtest_bars = st.slider(
+            "Number of Candles to Backtest",
+            min_value=100,
+            max_value=1000,
+            value=500,
+            step=50,
+            help="More candles = more reliable results but slower processing"
+        )
+
+        if st.button("🚀 Run Multi-Timeframe Backtest", type="primary"):
+            st.markdown("---")
+
+            # List of timeframes to test
+            timeframes_to_test = []
+            if test_5m: timeframes_to_test.append(("5m", "5 Minutes"))
+            if test_15m: timeframes_to_test.append(("15m", "15 Minutes"))
+            if test_1h: timeframes_to_test.append(("1h", "1 Hour"))
+            if test_4h: timeframes_to_test.append(("4h", "4 Hours"))
+
+            if not timeframes_to_test:
+                st.warning("⚠️ Please select at least one timeframe to test.")
+            else:
+                results_comparison = []
+
+                # Progress bar
+                progress_bar = st.progress(0)
+                status_text = st.empty()
+
+                for idx, (tf, tf_name) in enumerate(timeframes_to_test):
+                    status_text.text(f"Testing {tf_name}...")
+
+                    try:
+                        # Load data for this timeframe
+                        if data_source == "Demo (CSV)":
+                            # For demo, we'll simulate different timeframes by sampling
+                            test_df = DataFetcher.load_from_csv('sample_btc_usdt_15m.csv')
+                            test_df = test_df.iloc[-backtest_bars:]
+
+                            # Resample for different timeframes if needed
+                            if tf == "1h":
+                                test_df = test_df.resample('1H', on=test_df.index).agg({
+                                    'open': 'first',
+                                    'high': 'max',
+                                    'low': 'min',
+                                    'close': 'last',
+                                    'volume': 'sum'
+                                }).dropna()
+                            elif tf == "4h":
+                                test_df = test_df.resample('4H', on=test_df.index).agg({
+                                    'open': 'first',
+                                    'high': 'max',
+                                    'low': 'min',
+                                    'close': 'last',
+                                    'volume': 'sum'
+                                }).dropna()
+                        else:
+                            # Fetch live data for this timeframe
+                            fetcher = DataFetcher('binance')
+                            test_df = fetcher.fetch_ohlcv(Config.SYMBOL, tf, limit=backtest_bars)
+
+                        # Update Config for this timeframe
+                        original_confluence = Config.MIN_CONFLUENCE_SCORE
+                        Config.MIN_CONFLUENCE_SCORE = min_confluence
+
+                        # Generate signals
+                        test_generator = SignalGenerator(test_df)
+                        test_signals = test_generator.generate_signals()
+
+                        # Run backtest
+                        if test_signals:
+                            backtester = Backtester(test_df, test_signals, initial_balance=account_balance)
+                            metrics = backtester.run_backtest()
+
+                            results_comparison.append({
+                                'Timeframe': tf_name,
+                                'TF Code': tf,
+                                'Candles': len(test_df),
+                                'Signals': metrics['total_trades'],
+                                'Closed': metrics['closed_trades'],
+                                'Open': metrics['open_trades'],
+                                'Wins': metrics['wins'],
+                                'Losses': metrics['losses'],
+                                'Win Rate': f"{metrics['win_rate']:.1f}%",
+                                'Profit Factor': f"{metrics['profit_factor']:.2f}",
+                                'Net Profit': f"${metrics['net_profit']:,.2f}",
+                                'ROI': f"{metrics['roi']:.2f}%",
+                                'Max DD': f"{metrics['max_drawdown']:.2f}%",
+                                'Final Balance': f"${metrics['final_balance']:,.2f}"
+                            })
+                        else:
+                            results_comparison.append({
+                                'Timeframe': tf_name,
+                                'TF Code': tf,
+                                'Candles': len(test_df),
+                                'Signals': 0,
+                                'Closed': 0,
+                                'Open': 0,
+                                'Wins': 0,
+                                'Losses': 0,
+                                'Win Rate': "0.0%",
+                                'Profit Factor': "0.00",
+                                'Net Profit': "$0.00",
+                                'ROI': "0.00%",
+                                'Max DD': "0.00%",
+                                'Final Balance': f"${account_balance:,.2f}"
+                            })
+
+                        # Restore original config
+                        Config.MIN_CONFLUENCE_SCORE = original_confluence
+
+                    except Exception as e:
+                        st.error(f"Error testing {tf_name}: {str(e)}")
+                        results_comparison.append({
+                            'Timeframe': tf_name,
+                            'TF Code': tf,
+                            'Error': str(e)
+                        })
+
+                    # Update progress
+                    progress_bar.progress((idx + 1) / len(timeframes_to_test))
+
+                status_text.text("✅ Backtest Complete!")
+                progress_bar.empty()
+
+                # Display results
+                if results_comparison:
+                    st.markdown("### 📊 Backtest Results Comparison")
+
+                    results_df = pd.DataFrame(results_comparison)
+
+                    # Highlight best performer
+                    def highlight_best(s):
+                        if s.name in ['Net Profit', 'ROI', 'Win Rate']:
+                            # Convert to numeric for comparison
+                            numeric_vals = []
+                            for val in s:
+                                if isinstance(val, str):
+                                    clean_val = val.replace('$', '').replace(',', '').replace('%', '')
+                                    try:
+                                        numeric_vals.append(float(clean_val))
+                                    except:
+                                        numeric_vals.append(0)
+                                else:
+                                    numeric_vals.append(val)
+
+                            max_val = max(numeric_vals) if numeric_vals else 0
+                            return ['background-color: rgba(38, 166, 154, 0.3)' if v == max_val else ''
+                                    for v in numeric_vals]
+                        return ['' for _ in s]
+
+                    st.dataframe(
+                        results_df.style.apply(highlight_best, axis=0),
+                        use_container_width=True,
+                        hide_index=True
+                    )
+
+                    # Performance visualization
+                    st.markdown("### 📈 Performance Visualization")
+
+                    # Extract numeric values for plotting
+                    plot_data = []
+                    for result in results_comparison:
+                        if 'Error' not in result:
+                            roi_val = float(result['ROI'].replace('%', ''))
+                            win_rate_val = float(result['Win Rate'].replace('%', ''))
+                            plot_data.append({
+                                'Timeframe': result['Timeframe'],
+                                'ROI (%)': roi_val,
+                                'Win Rate (%)': win_rate_val,
+                                'Signals': result['Signals']
+                            })
+
+                    if plot_data:
+                        chart_df = pd.DataFrame(plot_data)
+
+                        col1, col2 = st.columns(2)
+
+                        with col1:
+                            # ROI comparison
+                            fig_roi = go.Figure()
+                            fig_roi.add_trace(go.Bar(
+                                x=chart_df['Timeframe'],
+                                y=chart_df['ROI (%)'],
+                                marker_color=['#26a69a' if v >= 0 else '#ef5350' for v in chart_df['ROI (%)']],
+                                text=chart_df['ROI (%)'].apply(lambda x: f"{x:.2f}%"),
+                                textposition='outside'
+                            ))
+                            fig_roi.update_layout(
+                                title="ROI by Timeframe",
+                                xaxis_title="Timeframe",
+                                yaxis_title="ROI (%)",
+                                height=400,
+                                template="plotly_dark"
+                            )
+                            st.plotly_chart(fig_roi, use_container_width=True)
+
+                        with col2:
+                            # Signals & Win Rate
+                            fig_signals = go.Figure()
+                            fig_signals.add_trace(go.Bar(
+                                x=chart_df['Timeframe'],
+                                y=chart_df['Signals'],
+                                name='Total Signals',
+                                marker_color='#2196f3'
+                            ))
+                            fig_signals.add_trace(go.Scatter(
+                                x=chart_df['Timeframe'],
+                                y=chart_df['Win Rate (%)'],
+                                name='Win Rate (%)',
+                                yaxis='y2',
+                                marker=dict(color='#ffd700', size=10),
+                                mode='lines+markers'
+                            ))
+                            fig_signals.update_layout(
+                                title="Signals & Win Rate",
+                                xaxis_title="Timeframe",
+                                yaxis_title="Signals",
+                                yaxis2=dict(title="Win Rate (%)", overlaying='y', side='right'),
+                                height=400,
+                                template="plotly_dark",
+                                legend=dict(x=0.01, y=0.99)
+                            )
+                            st.plotly_chart(fig_signals, use_container_width=True)
+
+                    # Recommendations
+                    st.markdown("### 💡 Recommendations")
+
+                    if plot_data:
+                        best_roi = max(plot_data, key=lambda x: x['ROI (%)'])
+                        most_signals = max(plot_data, key=lambda x: x['Signals'])
+                        best_wr = max(plot_data, key=lambda x: x['Win Rate (%)'])
+
+                        col1, col2, col3 = st.columns(3)
+
+                        with col1:
+                            st.success(f"**Best ROI:** {best_roi['Timeframe']}\n\n{best_roi['ROI (%)']}% return")
+                        with col2:
+                            st.info(f"**Most Signals:** {most_signals['Timeframe']}\n\n{most_signals['Signals']} trades")
+                        with col3:
+                            st.success(f"**Best Win Rate:** {best_wr['Timeframe']}\n\n{best_wr['Win Rate (%)']}% wins")
+
+                        st.markdown(f"""
+                        **Analysis:**
+                        - **{best_roi['Timeframe']}** produced the highest ROI ({best_roi['ROI (%)']}%)
+                        - **{most_signals['Timeframe']}** generated the most trading opportunities ({most_signals['Signals']} signals)
+                        - **{best_wr['Timeframe']}** had the best win rate ({best_wr['Win Rate (%)']}%)
+
+                        💡 Consider using **{best_roi['Timeframe']}** for optimal risk-adjusted returns.
+                        """)
 
     # Footer
     st.markdown("---")
