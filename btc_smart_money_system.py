@@ -13,7 +13,7 @@ This system implements a sophisticated trading strategy based on:
 - Multi-timeframe confluence analysis (12+ factors)
 
 Author: Institutional Trading System
-Version: 3.8.0 - Threshold Validation (Bugs #26-27 Fixed)
+Version: 4.0.0 - Built-in Elliott Wave & Realistic Trading (Bugs #28-30 Fixed)
 """
 
 import pandas as pd
@@ -590,6 +590,110 @@ class SmartMoneyDetector:
 
         return df
 
+    @staticmethod
+    def detect_simple_elliott_waves(df: pd.DataFrame) -> List[Dict]:
+        """
+        Simple Elliott Wave detection - identifies 5-wave impulse patterns
+
+        FIXED BUG #30: Created built-in Elliott Wave detector to replace missing external module
+
+        This is a simplified detector that looks for basic 5-wave impulse patterns:
+        - Wave 1: Initial move
+        - Wave 2: Retracement (doesn't exceed wave 1 start)
+        - Wave 3: Strong move (usually longest)
+        - Wave 4: Retracement (doesn't overlap wave 1)
+        - Wave 5: Final move
+
+        Args:
+            df: OHLCV DataFrame with swing points
+
+        Returns:
+            List of detected wave patterns with confidence scores
+        """
+        patterns = []
+
+        # Need swing points to detect waves
+        if 'swing_high' not in df.columns or 'swing_low' not in df.columns:
+            return patterns
+
+        swings_high = df[df['swing_high'] == True]
+        swings_low = df[df['swing_low'] == True]
+
+        # Need at least 5 swings to form a wave pattern
+        if len(swings_high) < 3 or len(swings_low) < 3:
+            return patterns
+
+        # Combine and sort swings by time
+        all_swings = []
+        for idx in swings_high.index:
+            all_swings.append({'index': idx, 'price': df.loc[idx, 'high'], 'type': 'high'})
+        for idx in swings_low.index:
+            all_swings.append({'index': idx, 'price': df.loc[idx, 'low'], 'type': 'low'})
+        all_swings.sort(key=lambda x: x['index'])
+
+        # Look for 5-wave bullish impulse patterns
+        for i in range(len(all_swings) - 8):
+            # Pattern: L-H-L-H-L-H-L-H-L (low-high alternating, 9 points = 5 waves)
+            sequence = all_swings[i:i+9]
+
+            # Check if alternating low-high pattern
+            expected = ['low', 'high', 'low', 'high', 'low', 'high', 'low', 'high', 'low']
+            actual = [s['type'] for s in sequence]
+
+            if actual == expected:
+                # Validate Elliott Wave rules
+                p0, p1, p2, p3, p4, p5, p6, p7, p8 = [s['price'] for s in sequence]
+
+                # Wave 1 (p0->p1): Up move
+                # Wave 2 (p1->p2): Down retrace, should not go below p0
+                # Wave 3 (p2->p3): Up move, should exceed p1
+                # Wave 4 (p3->p4): Down retrace, should not overlap wave 1 (stay above p1)
+                # Wave 5 (p4->p5): Up move, may or may not exceed p3
+
+                if (p1 > p0 and  # Wave 1 up
+                    p2 > p0 and p2 < p1 and  # Wave 2 retraces but doesn't break start
+                    p3 > p1 and  # Wave 3 exceeds wave 1
+                    p4 > p1 and p4 < p3 and  # Wave 4 retraces but doesn't overlap wave 1
+                    p5 > p3):  # Wave 5 exceeds wave 3
+
+                    patterns.append({
+                        'type': 'bullish_impulse',
+                        'start_index': sequence[0]['index'],
+                        'end_index': sequence[-1]['index'],
+                        'confidence': 0.7,
+                        'wave_count': 5,
+                        'direction': 'up'
+                    })
+
+        # Look for 5-wave bearish impulse patterns
+        for i in range(len(all_swings) - 8):
+            sequence = all_swings[i:i+9]
+
+            # Pattern: H-L-H-L-H-L-H-L-H (high-low alternating)
+            expected = ['high', 'low', 'high', 'low', 'high', 'low', 'high', 'low', 'high']
+            actual = [s['type'] for s in sequence]
+
+            if actual == expected:
+                p0, p1, p2, p3, p4, p5, p6, p7, p8 = [s['price'] for s in sequence]
+
+                # Bearish wave rules (inverse of bullish)
+                if (p1 < p0 and  # Wave 1 down
+                    p2 < p0 and p2 > p1 and  # Wave 2 retraces up but doesn't exceed start
+                    p3 < p1 and  # Wave 3 exceeds wave 1
+                    p4 < p0 and p4 > p3 and  # Wave 4 retraces but doesn't overlap wave 1
+                    p5 < p3):  # Wave 5 exceeds wave 3
+
+                    patterns.append({
+                        'type': 'bearish_impulse',
+                        'start_index': sequence[0]['index'],
+                        'end_index': sequence[-1]['index'],
+                        'confidence': 0.7,
+                        'wave_count': 5,
+                        'direction': 'down'
+                    })
+
+        return patterns
+
 
 # ============================================================================
 # DATA VALIDATION
@@ -916,23 +1020,18 @@ class SignalGenerator:
         print(f"  ✓ Detected {self.df['liquidity_sweep'].notna().sum()} liquidity sweeps")
 
         # Enhanced features (if available)
+        print("  🔬 Activating enhanced analysis modules...")
+
+        # Elliott Wave Analysis (now built-in)
+        # FIXED BUG #30: Use built-in simple Elliott Wave detector instead of external module
+        try:
+            self.elliott_patterns = SmartMoneyDetector.detect_simple_elliott_waves(self.df)
+            print(f"  ✓ Detected {len(self.elliott_patterns)} Elliott Wave patterns")
+        except Exception as e:
+            print(f"  ⚠️  Elliott Wave analysis failed: {e}")
+            self.elliott_patterns = []
+
         if ENHANCED_FEATURES_AVAILABLE:
-            print("  🔬 Activating enhanced analysis modules...")
-
-            # Elliott Wave Analysis
-            try:
-                self.elliott_analyzer = ElliottWaveAnalyzer(self.df, self.df)
-                self.elliott_patterns = self.elliott_analyzer.detect_impulse_waves(min_confidence=0.6)
-                self.corrective_patterns = self.elliott_analyzer.detect_corrective_waves(min_confidence=0.5)
-                print(f"  ✓ Detected {len(self.elliott_patterns)} Elliott Wave patterns")
-
-                if self.elliott_patterns:
-                    print(format_wave_summary(self.elliott_patterns))
-            except Exception as e:
-                print(f"  ⚠️  Elliott Wave analysis failed: {e}")
-                self.elliott_analyzer = None
-                self.elliott_patterns = []
-
             # Advanced Pattern Analysis
             try:
                 self.pattern_analyzer = IntegratedPatternAnalyzer(self.df)
@@ -1000,8 +1099,8 @@ class SignalGenerator:
                 self.trendlines = []
                 self.triangles = []
         else:
-            self.elliott_analyzer = None
-            self.elliott_patterns = []
+            # Elliott Wave is now always available (built-in)
+            # Only set these if enhanced features are not available
             self.pattern_analyzer = None
             self.trendlines = []
             self.triangles = []
@@ -1103,28 +1202,20 @@ class SignalGenerator:
             factors.extend(additional_factors)
 
             # 8. Elliott Wave Context
-            if self.elliott_analyzer and self.elliott_patterns:
-                wave_context = self.elliott_analyzer.get_current_wave_context()
-
-                if wave_context['wave']:
-                    # Wave 2 is prime entry zone
-                    if wave_context['wave'] == 'Wave 2':
-                        if (direction == 'long' and wave_context['direction'] == 'bullish') or \
-                           (direction == 'short' and wave_context['direction'] == 'bearish'):
-                            score += 2  # Strong boost for Wave 2 entries
-                            factors.append(f"Elliott Wave 2 Entry ({wave_context['smart_money_action']})")
-
-                    # Wave 3 continuation
-                    elif wave_context['wave'] == 'Wave 3':
-                        if (direction == 'long' and wave_context['direction'] == 'bullish') or \
-                           (direction == 'short' and wave_context['direction'] == 'bearish'):
+            # FIXED BUG #30: Simplified Elliott Wave confluence (built-in detector)
+            if self.elliott_patterns:
+                # Check if current position is within an Elliott Wave pattern
+                for pattern in self.elliott_patterns:
+                    # If we're near the end of a wave pattern, give bonus
+                    if pattern['start_index'] <= idx <= pattern['end_index']:
+                        # Bullish impulse wave aligns with long direction
+                        if direction == 'long' and pattern['direction'] == 'up':
                             score += 1
-                            factors.append("Elliott Wave 3 (Money Wave)")
-
-                    # Wave 5 warning (exit zone)
-                    elif wave_context['wave'] == 'Wave 5':
-                        score -= 1  # Reduce confidence in Wave 5
-                        factors.append("Wave 5 Warning (Exit Zone)")
+                            factors.append("Elliott Wave Bullish Impulse")
+                        # Bearish impulse wave aligns with short direction
+                        elif direction == 'short' and pattern['direction'] == 'down':
+                            score += 1
+                            factors.append("Elliott Wave Bearish Impulse")
 
             # 9. Candlestick Pattern Confluence
             if 'candlestick_pattern' in self.df.columns and pd.notna(row.get('candlestick_pattern')):
@@ -1275,17 +1366,23 @@ class SignalGenerator:
                 recent_swing_high = self.df[self.df['swing_high']]['high'].iloc[-5:].max() if self.df['swing_high'].any() else row['close'] * 1.05
                 recent_swing_low = self.df[self.df['swing_low']]['low'].iloc[-5:].min() if self.df['swing_low'].any() else row['close'] * 0.95
 
-                # Calculate Fibonacci extension for TP
-                extensions = FibonacciAnalyzer.calculate_extensions(
-                    recent_swing_high, recent_swing_low, 'bullish'
-                )
+                # Calculate stop loss and take profit
+                entry = row['close']
+                stop_loss = recent_swing_low * 0.998  # Just below swing low
+                stop_distance = entry - stop_loss
+
+                # FIXED BUG #29: Use realistic TP based on R:R ratio instead of aggressive Fib extension
+                # For intraday 15m trades, use 1:1.5 R:R ratio (was using 161.8% Fib = too far)
+                risk_reward_ratio = 1.5
+                take_profit = entry + (stop_distance * risk_reward_ratio)
 
                 signal = {
                     'timestamp': row.name,
                     'type': 'LONG',
-                    'entry_price': row['close'],
-                    'stop_loss': recent_swing_low * 0.998,  # Just below swing low
-                    'take_profit': extensions['161.8%'],  # Primary Fib target
+                    'entry_price': entry,
+                    'stop_loss': stop_loss,
+                    'take_profit': take_profit,
+                    'risk_reward': risk_reward_ratio,
                     'confidence': long_score,
                     'factors': long_factors,
                     'session': row['session']
@@ -1299,16 +1396,23 @@ class SignalGenerator:
                 recent_swing_high = self.df[self.df['swing_high']]['high'].iloc[-5:].max() if self.df['swing_high'].any() else row['close'] * 1.05
                 recent_swing_low = self.df[self.df['swing_low']]['low'].iloc[-5:].min() if self.df['swing_low'].any() else row['close'] * 0.95
 
-                extensions = FibonacciAnalyzer.calculate_extensions(
-                    recent_swing_high, recent_swing_low, 'bearish'
-                )
+                # Calculate stop loss and take profit
+                entry = row['close']
+                stop_loss = recent_swing_high * 1.002  # Just above swing high
+                stop_distance = stop_loss - entry
+
+                # FIXED BUG #29: Use realistic TP based on R:R ratio instead of aggressive Fib extension
+                # For intraday 15m trades, use 1:1.5 R:R ratio (was using 161.8% Fib = too far)
+                risk_reward_ratio = 1.5
+                take_profit = entry - (stop_distance * risk_reward_ratio)
 
                 signal = {
                     'timestamp': row.name,
                     'type': 'SHORT',
-                    'entry_price': row['close'],
-                    'stop_loss': recent_swing_high * 1.002,  # Just above swing high
-                    'take_profit': extensions['161.8%'],
+                    'entry_price': entry,
+                    'stop_loss': stop_loss,
+                    'take_profit': take_profit,
+                    'risk_reward': risk_reward_ratio,
                     'confidence': short_score,
                     'factors': short_factors,
                     'session': row['session']
@@ -1854,6 +1958,7 @@ class Backtester:
         balance = self.initial_balance
         wins = 0
         losses = 0
+        open_trades = 0  # FIXED BUG #28: Track open trades
         total_profit = 0
         total_loss = 0
         max_drawdown = 0
@@ -1904,6 +2009,8 @@ class Backtester:
                 losses += 1
                 outcome = 'LOSS'
             else:
+                # FIXED BUG #28: Count open trades
+                open_trades += 1
                 outcome = 'OPEN'
 
             # Track drawdown
@@ -1919,14 +2026,18 @@ class Backtester:
             })
 
         # Calculate metrics
-        total_trades = wins + losses
-        win_rate = (wins / total_trades * 100) if total_trades > 0 else 0
+        # FIXED BUG #28: Include all entered trades (closed + open)
+        closed_trades = wins + losses
+        total_trades = wins + losses + open_trades
+        win_rate = (wins / closed_trades * 100) if closed_trades > 0 else 0
         profit_factor = (total_profit / total_loss) if total_loss > 0 else float('inf')
         net_profit = balance - self.initial_balance
         roi = (net_profit / self.initial_balance) * 100
 
         metrics = {
             'total_trades': total_trades,
+            'closed_trades': closed_trades,
+            'open_trades': open_trades,
             'wins': wins,
             'losses': losses,
             'win_rate': win_rate,
@@ -1941,7 +2052,10 @@ class Backtester:
         print("\n" + "="*60)
         print("BACKTEST RESULTS")
         print("="*60)
-        print(f"Total Trades:     {total_trades}")
+        print(f"Total Signals:    {total_trades}")
+        print(f"Closed Trades:    {closed_trades}")
+        if open_trades > 0:
+            print(f"Open Trades:      {open_trades} ⚠️  (no TP/SL hit in data)")
         print(f"Wins:             {wins} ({win_rate:.1f}%)")
         print(f"Losses:           {losses}")
         print(f"Profit Factor:    {profit_factor:.2f}")
