@@ -13,7 +13,7 @@ This system implements a sophisticated trading strategy based on:
 - Multi-timeframe confluence analysis (12+ factors)
 
 Author: Institutional Trading System
-Version: 4.0.0 - Built-in Elliott Wave & Realistic Trading (Bugs #28-30 Fixed)
+Version: 4.1.0 - Actually Working Trades (Bug #31 Fixed - 1:1 R:R + More Signals)
 """
 
 import pandas as pd
@@ -88,7 +88,9 @@ class Config:
     NY_SESSION = (13, 15)  # 13:30-15:30 UTC (adjusted for clarity)
 
     # Signal confluence requirements
-    MIN_CONFLUENCE_SCORE = 6  # Minimum factors for valid signal (50% of 12 factors)
+    # FIXED BUG #31: Lowered from 6 to 4 to generate more signals (33% of 12 factors)
+    # 6 was too strict, only 1 signal in 500 candles
+    MIN_CONFLUENCE_SCORE = 4  # Minimum factors for valid signal
 
     # Risk management
     RISK_PER_TRADE = 0.01  # 1% risk per trade
@@ -1371,9 +1373,10 @@ class SignalGenerator:
                 stop_loss = recent_swing_low * 0.998  # Just below swing low
                 stop_distance = entry - stop_loss
 
-                # FIXED BUG #29: Use realistic TP based on R:R ratio instead of aggressive Fib extension
-                # For intraday 15m trades, use 1:1.5 R:R ratio (was using 161.8% Fib = too far)
-                risk_reward_ratio = 1.5
+                # FIXED BUG #29 & #31: Use realistic TP for intraday 15m trading
+                # Changed from 1:1.5 to 1:1 R:R (1.5 was still too aggressive)
+                # 1:1 R:R appropriate for 15m timeframe with realistic profit targets
+                risk_reward_ratio = 1.0
                 take_profit = entry + (stop_distance * risk_reward_ratio)
 
                 signal = {
@@ -1401,9 +1404,10 @@ class SignalGenerator:
                 stop_loss = recent_swing_high * 1.002  # Just above swing high
                 stop_distance = stop_loss - entry
 
-                # FIXED BUG #29: Use realistic TP based on R:R ratio instead of aggressive Fib extension
-                # For intraday 15m trades, use 1:1.5 R:R ratio (was using 161.8% Fib = too far)
-                risk_reward_ratio = 1.5
+                # FIXED BUG #29 & #31: Use realistic TP for intraday 15m trading
+                # Changed from 1:1.5 to 1:1 R:R (1.5 was still too aggressive)
+                # 1:1 R:R appropriate for 15m timeframe with realistic profit targets
+                risk_reward_ratio = 1.0
                 take_profit = entry - (stop_distance * risk_reward_ratio)
 
                 signal = {
