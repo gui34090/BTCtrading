@@ -13,7 +13,7 @@ This system implements a sophisticated trading strategy based on:
 - Multi-timeframe confluence analysis (12+ factors)
 
 Author: Institutional Trading System
-Version: 4.3.0 - Enhanced Detection (Fixed Swing Alternation, Relaxed Elliott Waves, Sensitive Liquidity Sweeps)
+Version: 4.3.1 - PRODUCTION READY (Fixed Critical Margin Calculation Bug #36)
 """
 
 import pandas as pd
@@ -1659,7 +1659,7 @@ class RiskManager:
         # Check margin required, not total position value (since we're using leverage)
         # Margin required = position_value / leverage
         position_value = position_size * entry_price  # Without leverage
-        margin_required = position_value
+        margin_required = position_value / Config.LEVERAGE  # FIXED BUG #36
 
         # Margin should not exceed account balance (sanity check)
         # This would mean risking > 100% of account on margin alone
