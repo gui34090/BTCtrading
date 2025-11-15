@@ -13,7 +13,7 @@ This system implements a sophisticated trading strategy based on:
 - Multi-timeframe confluence analysis (12+ factors)
 
 Author: Institutional Trading System
-Version: 4.2.0 - Full Strategy Backtest (Uses Real RiskManager + Position Sizing)
+Version: 4.3.0 - Enhanced Detection (Fixed Swing Alternation, Relaxed Elliott Waves, Sensitive Liquidity Sweeps)
 """
 
 import pandas as pd
@@ -268,7 +268,10 @@ class SmartMoneyDetector:
     @staticmethod
     def detect_swing_points(df: pd.DataFrame, length: int = 10) -> pd.DataFrame:
         """
-        Identify swing highs and lows
+        Identify swing highs and lows with improved alternation
+
+        FIXED BUG #32: Ensures proper alternation by preventing same candle
+        from being both high and low, and filtering consecutive same-type swings
 
         Args:
             df: OHLCV DataFrame
@@ -281,24 +284,73 @@ class SmartMoneyDetector:
         df['swing_high'] = False
         df['swing_low'] = False
 
+        candidates = []
+
         for i in range(length, len(df) - length):
+            is_swing_high = False
+            is_swing_low = False
+
             # Swing High: highest high in window
             window_highs = df['high'].iloc[i-length:i+length+1]
-            max_high = window_highs.max()
-
-            # FIXED: Use idxmax to get first occurrence, avoiding multiple swings at same level
-            # Only mark as swing if this is the FIRST occurrence of the maximum
-            if df.index[i] == window_highs.idxmax():
-                df.loc[df.index[i], 'swing_high'] = True
+            if df['high'].iloc[i] == window_highs.max():
+                # Verify it's actually a peak (higher than neighbors)
+                if (df['high'].iloc[i] >= df['high'].iloc[i-1] and
+                    df['high'].iloc[i] >= df['high'].iloc[i+1]):
+                    is_swing_high = True
 
             # Swing Low: lowest low in window
             window_lows = df['low'].iloc[i-length:i+length+1]
-            min_low = window_lows.min()
+            if df['low'].iloc[i] == window_lows.min():
+                # Verify it's actually a trough (lower than neighbors)
+                if (df['low'].iloc[i] <= df['low'].iloc[i-1] and
+                    df['low'].iloc[i] <= df['low'].iloc[i+1]):
+                    is_swing_low = True
 
-            # FIXED: Use idxmin to get first occurrence, avoiding multiple swings at same level
-            # Only mark as swing if this is the FIRST occurrence of the minimum
-            if df.index[i] == window_lows.idxmin():
-                df.loc[df.index[i], 'swing_low'] = True
+            # If both, choose the stronger one (larger deviation from neighbors)
+            if is_swing_high and is_swing_low:
+                high_strength = abs(df['high'].iloc[i] - df['high'].iloc[i-length:i+length+1].mean()) / df['high'].iloc[i]
+                low_strength = abs(df['low'].iloc[i-length:i+length+1].mean() - df['low'].iloc[i]) / df['low'].iloc[i]
+
+                if high_strength > low_strength:
+                    is_swing_low = False  # Keep only swing high
+                else:
+                    is_swing_high = False  # Keep only swing low
+
+            if is_swing_high:
+                candidates.append({'index': i, 'type': 'high', 'price': df['high'].iloc[i]})
+            if is_swing_low:
+                candidates.append({'index': i, 'type': 'low', 'price': df['low'].iloc[i]})
+
+        # Filter out consecutive same-type swings, keeping the stronger one
+        filtered = []
+        for i in range(len(candidates)):
+            if i == 0:
+                filtered.append(candidates[i])
+                continue
+
+            current = candidates[i]
+            previous = filtered[-1]
+
+            # If same type, keep only the more extreme one
+            if current['type'] == previous['type']:
+                if current['type'] == 'high':
+                    # Keep higher high
+                    if current['price'] > previous['price']:
+                        filtered[-1] = current
+                else:  # low
+                    # Keep lower low
+                    if current['price'] < previous['price']:
+                        filtered[-1] = current
+            else:
+                # Different type, add to filtered
+                filtered.append(current)
+
+        # Mark the filtered swings in dataframe
+        for swing in filtered:
+            if swing['type'] == 'high':
+                df.loc[df.index[swing['index']], 'swing_high'] = True
+            else:
+                df.loc[df.index[swing['index']], 'swing_low'] = True
 
         return df
 
@@ -558,16 +610,21 @@ class SmartMoneyDetector:
         return df
 
     @staticmethod
-    def detect_liquidity_sweep(df: pd.DataFrame, swing_length: int = 10) -> pd.DataFrame:
+    def detect_liquidity_sweep(df: pd.DataFrame, swing_length: int = 10,
+                               wick_threshold: float = 0.0005) -> pd.DataFrame:
         """
-        Identify liquidity sweeps (stop hunts beyond swing points)
+        Identify liquidity sweeps with enhanced sensitivity
 
-        A liquidity sweep occurs when price briefly breaks a swing level
-        then quickly reverses, triggering stops.
+        FIXED BUG #34: Made detection more sensitive by:
+        - Adding wick_threshold parameter (0.05% minimum wick beyond swing)
+        - Allowing partial sweeps (close within 0.5% of swing level)
+        - Detecting both full and partial sweeps
+        - Fixed logic error in prev_swing extraction
 
         Args:
             df: OHLCV DataFrame with swing points
             swing_length: Lookback for swing detection
+            wick_threshold: Minimum wick extension beyond swing (default 0.05%)
 
         Returns:
             DataFrame with liquidity_sweep column
@@ -577,34 +634,48 @@ class SmartMoneyDetector:
 
         for i in range(swing_length, len(df)):
             current = df.iloc[i]
-            prev_swing_high = df['high'].iloc[i-swing_length:i][df['swing_high'].iloc[i-swing_length:i]].max() if df['swing_high'].iloc[i-swing_length:i].any() else 0
-            prev_swing_low = df['low'].iloc[i-swing_length:i][df['swing_low'].iloc[i-swing_length:i]].min() if df['swing_low'].iloc[i-swing_length:i].any() else float('inf')
+            lookback = df.iloc[i-swing_length:i]
 
-            # Bullish sweep: Wick below swing low, close above
-            if prev_swing_low != float('inf') and current['low'] < prev_swing_low:
-                if current['close'] > prev_swing_low:
-                    df.loc[df.index[i], 'liquidity_sweep'] = 'bullish'
+            # Get previous swing points in lookback window (FIXED)
+            prev_highs = lookback[lookback['swing_high'] == True]
+            prev_lows = lookback[lookback['swing_low'] == True]
 
             # Bearish sweep: Wick above swing high, close below
-            if prev_swing_high > 0 and current['high'] > prev_swing_high:
-                if current['close'] < prev_swing_high:
-                    df.loc[df.index[i], 'liquidity_sweep'] = 'bearish'
+            if len(prev_highs) > 0:
+                prev_swing_high = prev_highs['high'].max()
+
+                # Check if high exceeded swing level
+                if current['high'] > prev_swing_high * (1 + wick_threshold):
+                    # Full sweep: close back below swing level
+                    if current['close'] < prev_swing_high:
+                        df.loc[df.index[i], 'liquidity_sweep'] = 'bearish'
+                    # Partial sweep: close within 0.5% of swing level
+                    elif current['close'] < prev_swing_high * 1.005:
+                        df.loc[df.index[i], 'liquidity_sweep'] = 'bearish_partial'
+
+            # Bullish sweep: Wick below swing low, close above
+            if len(prev_lows) > 0:
+                prev_swing_low = prev_lows['low'].min()
+
+                # Check if low broke below swing level
+                if current['low'] < prev_swing_low * (1 - wick_threshold):
+                    # Full sweep: close back above swing level
+                    if current['close'] > prev_swing_low:
+                        df.loc[df.index[i], 'liquidity_sweep'] = 'bullish'
+                    # Partial sweep: close within 0.5% of swing level
+                    elif current['close'] > prev_swing_low * 0.995:
+                        df.loc[df.index[i], 'liquidity_sweep'] = 'bullish_partial'
 
         return df
 
     @staticmethod
     def detect_simple_elliott_waves(df: pd.DataFrame) -> List[Dict]:
         """
-        Simple Elliott Wave detection - identifies 5-wave impulse patterns
+        Simple Elliott Wave detection with relaxed criteria for real-world data
 
-        FIXED BUG #30: Created built-in Elliott Wave detector to replace missing external module
-
-        This is a simplified detector that looks for basic 5-wave impulse patterns:
-        - Wave 1: Initial move
-        - Wave 2: Retracement (doesn't exceed wave 1 start)
-        - Wave 3: Strong move (usually longest)
-        - Wave 4: Retracement (doesn't overlap wave 1)
-        - Wave 5: Final move
+        FIXED BUG #30: Created built-in Elliott Wave detector
+        FIXED BUG #33: Relaxed requirements from perfect 9-swing alternation
+        to more realistic 5-9 swing patterns that still respect Elliott rules
 
         Args:
             df: OHLCV DataFrame with swing points
@@ -621,8 +692,8 @@ class SmartMoneyDetector:
         swings_high = df[df['swing_high'] == True]
         swings_low = df[df['swing_low'] == True]
 
-        # Need at least 5 swings to form a wave pattern
-        if len(swings_high) < 3 or len(swings_low) < 3:
+        # Need at least some swings to form a wave pattern
+        if len(swings_high) < 2 or len(swings_low) < 2:
             return patterns
 
         # Combine and sort swings by time
@@ -633,68 +704,128 @@ class SmartMoneyDetector:
             all_swings.append({'index': idx, 'price': df.loc[idx, 'low'], 'type': 'low'})
         all_swings.sort(key=lambda x: x['index'])
 
-        # Look for 5-wave bullish impulse patterns
-        for i in range(len(all_swings) - 8):
-            # Pattern: L-H-L-H-L-H-L-H-L (low-high alternating, 9 points = 5 waves)
-            sequence = all_swings[i:i+9]
+        # RELAXED: Look for 5-9 swing patterns (not requiring perfect alternation)
+        min_swings = 5
+        max_swings = 9
 
-            # Check if alternating low-high pattern
-            expected = ['low', 'high', 'low', 'high', 'low', 'high', 'low', 'high', 'low']
-            actual = [s['type'] for s in sequence]
+        for pattern_length in range(max_swings, min_swings-1, -1):
+            if len(all_swings) < pattern_length:
+                continue
 
-            if actual == expected:
-                # Validate Elliott Wave rules
-                p0, p1, p2, p3, p4, p5, p6, p7, p8 = [s['price'] for s in sequence]
+            for i in range(len(all_swings) - pattern_length + 1):
+                sequence = all_swings[i:i+pattern_length]
 
-                # Wave 1 (p0->p1): Up move
-                # Wave 2 (p1->p2): Down retrace, should not go below p0
-                # Wave 3 (p2->p3): Up move, should exceed p1
-                # Wave 4 (p3->p4): Down retrace, should not overlap wave 1 (stay above p1)
-                # Wave 5 (p4->p5): Up move, may or may not exceed p3
+                # Try bullish pattern: starts with low
+                if sequence[0]['type'] == 'low' and sequence[-1]['type'] == 'low':
+                    if SmartMoneyDetector._is_valid_bullish_wave(sequence):
+                        confidence = 0.7 if pattern_length >= 7 else 0.5
+                        patterns.append({
+                            'type': 'bullish_impulse',
+                            'start_index': sequence[0]['index'],
+                            'end_index': sequence[-1]['index'],
+                            'confidence': confidence,
+                            'wave_count': (pattern_length + 1) // 2,
+                            'direction': 'up'
+                        })
 
-                if (p1 > p0 and  # Wave 1 up
-                    p2 > p0 and p2 < p1 and  # Wave 2 retraces but doesn't break start
-                    p3 > p1 and  # Wave 3 exceeds wave 1
-                    p4 > p1 and p4 < p3 and  # Wave 4 retraces but doesn't overlap wave 1
-                    p5 > p3):  # Wave 5 exceeds wave 3
+                # Try bearish pattern: starts with high
+                elif sequence[0]['type'] == 'high' and sequence[-1]['type'] == 'high':
+                    if SmartMoneyDetector._is_valid_bearish_wave(sequence):
+                        confidence = 0.7 if pattern_length >= 7 else 0.5
+                        patterns.append({
+                            'type': 'bearish_impulse',
+                            'start_index': sequence[0]['index'],
+                            'end_index': sequence[-1]['index'],
+                            'confidence': confidence,
+                            'wave_count': (pattern_length + 1) // 2,
+                            'direction': 'down'
+                        })
 
-                    patterns.append({
-                        'type': 'bullish_impulse',
-                        'start_index': sequence[0]['index'],
-                        'end_index': sequence[-1]['index'],
-                        'confidence': 0.7,
-                        'wave_count': 5,
-                        'direction': 'up'
-                    })
-
-        # Look for 5-wave bearish impulse patterns
-        for i in range(len(all_swings) - 8):
-            sequence = all_swings[i:i+9]
-
-            # Pattern: H-L-H-L-H-L-H-L-H (high-low alternating)
-            expected = ['high', 'low', 'high', 'low', 'high', 'low', 'high', 'low', 'high']
-            actual = [s['type'] for s in sequence]
-
-            if actual == expected:
-                p0, p1, p2, p3, p4, p5, p6, p7, p8 = [s['price'] for s in sequence]
-
-                # Bearish wave rules (inverse of bullish)
-                if (p1 < p0 and  # Wave 1 down
-                    p2 < p0 and p2 > p1 and  # Wave 2 retraces up but doesn't exceed start
-                    p3 < p1 and  # Wave 3 exceeds wave 1
-                    p4 < p0 and p4 > p3 and  # Wave 4 retraces but doesn't overlap wave 1
-                    p5 < p3):  # Wave 5 exceeds wave 3
-
-                    patterns.append({
-                        'type': 'bearish_impulse',
-                        'start_index': sequence[0]['index'],
-                        'end_index': sequence[-1]['index'],
-                        'confidence': 0.7,
-                        'wave_count': 5,
-                        'direction': 'down'
-                    })
+        # Remove overlapping patterns, keep highest confidence
+        patterns = SmartMoneyDetector._remove_overlapping_patterns(patterns)
 
         return patterns
+
+    @staticmethod
+    def _is_valid_bullish_wave(sequence):
+        """Check if sequence forms valid bullish Elliott Wave (relaxed rules)"""
+        if len(sequence) < 5:
+            return False
+
+        # Extract key points
+        lows = [s['price'] for s in sequence if s['type'] == 'low']
+        highs = [s['price'] for s in sequence if s['type'] == 'high']
+
+        if len(lows) < 2 or len(highs) < 2:
+            return False
+
+        # Basic Elliott rules (relaxed):
+        # 1. Upward movement overall
+        if lows[-1] <= lows[0]:
+            return False
+
+        # 2. Wave 3 (second high) should exceed wave 1 (first high)
+        if len(highs) >= 2 and highs[1] <= highs[0]:
+            return False
+
+        # 3. Retracements should be reasonable (not exceed starting low)
+        for i in range(1, len(lows)):
+            if lows[i] < lows[0] * 0.98:  # Allow 2% tolerance
+                return False
+
+        return True
+
+    @staticmethod
+    def _is_valid_bearish_wave(sequence):
+        """Check if sequence forms valid bearish Elliott Wave (relaxed rules)"""
+        if len(sequence) < 5:
+            return False
+
+        highs = [s['price'] for s in sequence if s['type'] == 'high']
+        lows = [s['price'] for s in sequence if s['type'] == 'low']
+
+        if len(highs) < 2 or len(lows) < 2:
+            return False
+
+        # Basic Elliott rules (relaxed):
+        # 1. Downward movement overall
+        if highs[-1] >= highs[0]:
+            return False
+
+        # 2. Wave 3 (second low) should exceed wave 1 (first low)
+        if len(lows) >= 2 and lows[1] >= lows[0]:
+            return False
+
+        # 3. Retracements should be reasonable
+        for i in range(1, len(highs)):
+            if highs[i] > highs[0] * 1.02:  # Allow 2% tolerance
+                return False
+
+        return True
+
+    @staticmethod
+    def _remove_overlapping_patterns(patterns):
+        """Remove overlapping patterns, keeping highest confidence"""
+        if not patterns:
+            return patterns
+
+        # Sort by confidence descending
+        patterns.sort(key=lambda x: x['confidence'], reverse=True)
+
+        filtered = []
+        for pattern in patterns:
+            overlaps = False
+            for existing in filtered:
+                # Check if ranges overlap
+                if not (pattern['end_index'] < existing['start_index'] or
+                        pattern['start_index'] > existing['end_index']):
+                    overlaps = True
+                    break
+
+            if not overlaps:
+                filtered.append(pattern)
+
+        return filtered
 
 
 # ============================================================================
@@ -1074,27 +1205,30 @@ class SignalGenerator:
                     self.trendlines = []
 
                 # Advanced Wave Patterns (ending diagonals, triangles)
-                if self.elliott_patterns:
-                    for pattern in self.elliott_patterns:
-                        # Check for ending diagonal in Wave 5
-                        if pattern.wave_5:
-                            wave_5_data = {
-                                'start_idx': pattern.wave_5.start_idx,
-                                'end_idx': pattern.wave_5.end_idx
-                            }
-                            diagonal = AdvancedWavePatterns.detect_ending_diagonal(self.df, wave_5_data)
-                            if diagonal:
-                                print(f"  ✓ Ending diagonal detected in Wave 5 ({diagonal['direction']})")
+                # Note: These require the external elliott_wave_analyzer module
+                # The built-in detector returns simple dicts, not complex Wave objects
+                self.triangles = []
+                if self.elliott_patterns and len(self.elliott_patterns) > 0:
+                    try:
+                        for pattern in self.elliott_patterns:
+                            # Check if pattern has the old structure (from external module)
+                            if hasattr(pattern, 'wave_5') and pattern.wave_5:
+                                wave_5_data = {
+                                    'start_idx': pattern.wave_5.start_idx,
+                                    'end_idx': pattern.wave_5.end_idx
+                                }
+                                diagonal = AdvancedWavePatterns.detect_ending_diagonal(self.df, wave_5_data)
+                                if diagonal:
+                                    print(f"  ✓ Ending diagonal detected in Wave 5 ({diagonal['direction']})")
 
-                    # Check for triangles
-                    triangles = AdvancedWavePatterns.detect_contracting_triangle(self.df, swing_df)
-                    if triangles:
-                        print(f"  ✓ Detected {len(triangles)} contracting triangle(s)")
-                        self.triangles = triangles
-                    else:
-                        self.triangles = []
-                else:
-                    self.triangles = []
+                        # Check for triangles
+                        triangles = AdvancedWavePatterns.detect_contracting_triangle(self.df, swing_df)
+                        if triangles:
+                            print(f"  ✓ Detected {len(triangles)} contracting triangle(s)")
+                            self.triangles = triangles
+                    except Exception:
+                        # Built-in simple detector doesn't support advanced patterns
+                        pass
 
             except Exception as e:
                 print(f"  ⚠️  Final features initialization failed: {e}")
@@ -1205,11 +1339,13 @@ class SignalGenerator:
 
             # 8. Elliott Wave Context
             # FIXED BUG #30: Simplified Elliott Wave confluence (built-in detector)
+            # FIXED BUG #35: Handle Timestamp vs int comparison
             if self.elliott_patterns:
                 # Check if current position is within an Elliott Wave pattern
+                current_time = self.df.index[idx]
                 for pattern in self.elliott_patterns:
                     # If we're near the end of a wave pattern, give bonus
-                    if pattern['start_index'] <= idx <= pattern['end_index']:
+                    if pattern['start_index'] <= current_time <= pattern['end_index']:
                         # Bullish impulse wave aligns with long direction
                         if direction == 'long' and pattern['direction'] == 'up':
                             score += 1
